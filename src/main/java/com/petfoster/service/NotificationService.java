@@ -1,7 +1,9 @@
 package com.petfoster.service;
 
 import com.petfoster.common.BusinessException;
+import com.petfoster.common.MoreStrings;
 import com.petfoster.common.PageResponse;
+import com.petfoster.common.PageSort;
 import com.petfoster.dto.NotificationDTO;
 import com.petfoster.entity.FailedNotification;
 import com.petfoster.entity.Notification;
@@ -11,21 +13,26 @@ import com.petfoster.util.EntityMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class NotificationService {
+
+    private static final String DEFAULT_SORT_FIELD = "createdAt";
+    private static final Map<String, String> SORT_FIELDS = Map.of(
+            "createdAt", "createdAt",
+            "created_at", "createdAt",
+            "isRead", "isRead",
+            "is_read", "isRead"
+    );
 
     private final NotificationRepository notificationRepository;
     private final FailedNotificationRepository failedNotificationRepository;
@@ -49,29 +56,13 @@ public class NotificationService {
     public PageResponse<NotificationDTO.NotificationResponse> getMyNotifications(
             Long userId, int page, int size, String sort, Boolean isRead) {
 
-        Sort sortObj = parseSort(sort);
-        Pageable pageable = PageRequest.of(page, size, sortObj);
+        var pageable = PageSort.of(page, size, sort, DEFAULT_SORT_FIELD, SORT_FIELDS);
 
-        Page<Notification> notificationPage;
-        if (isRead != null) {
-            notificationPage = notificationRepository.findByUserIdAndIsRead(userId, isRead, pageable);
-        } else {
-            notificationPage = notificationRepository.findByUserId(userId, pageable);
-        }
+        Page<Notification> notificationPage = isRead != null
+                ? notificationRepository.findByUserIdAndIsRead(userId, isRead, pageable)
+                : notificationRepository.findByUserId(userId, pageable);
 
-        List<NotificationDTO.NotificationResponse> content = notificationPage.getContent().stream()
-                .map(EntityMapper::toNotificationResponse)
-                .toList();
-
-        return PageResponse.<NotificationDTO.NotificationResponse>builder()
-                .content(content)
-                .pageNumber(notificationPage.getNumber())
-                .pageSize(notificationPage.getSize())
-                .totalElements(notificationPage.getTotalElements())
-                .totalPages(notificationPage.getTotalPages())
-                .first(notificationPage.isFirst())
-                .last(notificationPage.isLast())
-                .build();
+        return PageResponse.from(notificationPage, EntityMapper::toNotificationResponse);
     }
 
     public NotificationDTO.UnreadCountResponse getUnreadCount(Long userId) {
@@ -125,7 +116,7 @@ public class NotificationService {
             } catch (Exception e) {
                 int newCount = failed.getRetryCount() + 1;
                 failed.setRetryCount(newCount);
-                failed.setLastError(truncate(e.getMessage(), 2000));
+                failed.setLastError(MoreStrings.truncate(e.getMessage(), 2000));
 
                 if (newCount >= failed.getMaxRetries()) {
                     failed.setStatus(FailedNotification.Status.DEAD);
@@ -165,32 +156,11 @@ public class NotificationService {
                 log.info("手动恢复死亡消息成功: failedId={}, userId={}", failed.getId(), failed.getUserId());
             } catch (Exception e) {
                 failed.setRetryCount(failed.getRetryCount() + 1);
-                failed.setLastError(truncate(e.getMessage(), 2000));
+                failed.setLastError(MoreStrings.truncate(e.getMessage(), 2000));
                 failedNotificationRepository.save(failed);
                 log.error("手动恢复死亡消息失败: failedId={}, userId={}", failed.getId(), failed.getUserId());
             }
         }
         return recovered;
-    }
-
-    private String truncate(String str, int maxLen) {
-        if (str == null) return null;
-        return str.length() <= maxLen ? str : str.substring(0, maxLen);
-    }
-
-    private Sort parseSort(String sort) {
-        if (!StringUtils.hasText(sort)) {
-            return Sort.by(Sort.Direction.DESC, "createdAt");
-        }
-        String[] parts = sort.split(",");
-        String field = parts[0];
-        Sort.Direction direction = parts.length > 1 && "asc".equalsIgnoreCase(parts[1])
-                ? Sort.Direction.ASC : Sort.Direction.DESC;
-
-        return switch (field) {
-            case "createdAt", "created_at" -> Sort.by(direction, "createdAt");
-            case "isRead", "is_read" -> Sort.by(direction, "isRead");
-            default -> Sort.by(Sort.Direction.DESC, "createdAt");
-        };
     }
 }

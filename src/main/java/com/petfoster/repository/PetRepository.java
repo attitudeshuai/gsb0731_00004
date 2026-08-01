@@ -1,6 +1,7 @@
 package com.petfoster.repository;
 
 import com.petfoster.entity.Pet;
+import com.petfoster.repository.projection.SpeciesCount;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -26,4 +27,7 @@ public interface PetRepository extends JpaRepository<Pet, Long> {
             @Param("ownerId") Long ownerId,
             Pageable pageable
     );
+
+    @Query("SELECT p.species AS species, COUNT(p) AS count FROM Pet p GROUP BY p.species")
+    List<SpeciesCount> countBySpecies();
 }

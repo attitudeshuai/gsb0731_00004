@@ -2,18 +2,17 @@ package com.petfoster.service;
 
 import com.petfoster.common.BusinessException;
 import com.petfoster.common.PageResponse;
+import com.petfoster.common.PageSort;
 import com.petfoster.dto.PetDTO;
 import com.petfoster.entity.Pet;
 import com.petfoster.entity.User;
 import com.petfoster.repository.PetRepository;
 import com.petfoster.repository.UserRepository;
+import com.petfoster.util.EntityCollections;
 import com.petfoster.util.EntityMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -22,12 +21,20 @@ import org.springframework.util.StringUtils;
 
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class PetService {
+
+    private static final String DEFAULT_SORT_FIELD = "createdAt";
+    private static final Map<String, String> SORT_FIELDS = Map.of(
+            "name", "name",
+            "age", "age",
+            "species", "species",
+            "createdAt", "createdAt",
+            "created_at", "createdAt"
+    );
 
     private final PetRepository petRepository;
     private final UserRepository userRepository;
@@ -36,8 +43,7 @@ public class PetService {
     public PageResponse<PetDTO.PetResponse> getPets(
             int page, int size, String sort, String name, String species, Long ownerId) {
 
-        Sort sortObj = parseSort(sort);
-        Pageable pageable = PageRequest.of(page, size, sortObj);
+        var pageable = PageSort.of(page, size, sort, DEFAULT_SORT_FIELD, SORT_FIELDS);
 
         Page<Pet> petPage = petRepository.searchPets(
                 StringUtils.hasText(name) ? name : null,
@@ -50,22 +56,11 @@ public class PetService {
                 .map(Pet::getOwnerId)
                 .distinct()
                 .toList();
-        Map<Long, User> userMap = userRepository.findAllById(ownerIds).stream()
-                .collect(Collectors.toMap(User::getId, u -> u));
+        Map<Long, User> userMap = EntityCollections.toIdMap(
+                userRepository.findAllById(ownerIds), User::getId);
 
-        List<PetDTO.PetResponse> content = petPage.getContent().stream()
-                .map(pet -> EntityMapper.toPetResponse(pet, userMap.get(pet.getOwnerId())))
-                .toList();
-
-        return PageResponse.<PetDTO.PetResponse>builder()
-                .content(content)
-                .pageNumber(petPage.getNumber())
-                .pageSize(petPage.getSize())
-                .totalElements(petPage.getTotalElements())
-                .totalPages(petPage.getTotalPages())
-                .first(petPage.isFirst())
-                .last(petPage.isLast())
-                .build();
+        return PageResponse.from(petPage,
+                pet -> EntityMapper.toPetResponse(pet, userMap.get(pet.getOwnerId())));
     }
 
     public PetDTO.PetResponse getPetById(Long id) {
@@ -76,25 +71,12 @@ public class PetService {
     }
 
     public PageResponse<PetDTO.PetResponse> getMyPets(Long userId, int page, int size, String sort) {
-        Sort sortObj = parseSort(sort);
-        Pageable pageable = PageRequest.of(page, size, sortObj);
+        var pageable = PageSort.of(page, size, sort, DEFAULT_SORT_FIELD, SORT_FIELDS);
 
         Page<Pet> petPage = petRepository.findByOwnerId(userId, pageable);
         User owner = userRepository.findById(userId).orElse(null);
 
-        List<PetDTO.PetResponse> content = petPage.getContent().stream()
-                .map(pet -> EntityMapper.toPetResponse(pet, owner))
-                .toList();
-
-        return PageResponse.<PetDTO.PetResponse>builder()
-                .content(content)
-                .pageNumber(petPage.getNumber())
-                .pageSize(petPage.getSize())
-                .totalElements(petPage.getTotalElements())
-                .totalPages(petPage.getTotalPages())
-                .first(petPage.isFirst())
-                .last(petPage.isLast())
-                .build();
+        return PageResponse.from(petPage, pet -> EntityMapper.toPetResponse(pet, owner));
     }
 
     @Transactional
@@ -247,23 +229,5 @@ public class PetService {
             fileStorageService.deleteFile(photoUrl);
             log.info("宠物照片已清理: petId={}, photoUrl={}", petId, photoUrl);
         }
-    }
-
-    private Sort parseSort(String sort) {
-        if (!StringUtils.hasText(sort)) {
-            return Sort.by(Sort.Direction.DESC, "createdAt");
-        }
-        String[] parts = sort.split(",");
-        String field = parts[0];
-        Sort.Direction direction = parts.length > 1 && "asc".equalsIgnoreCase(parts[1])
-                ? Sort.Direction.ASC : Sort.Direction.DESC;
-
-        return switch (field) {
-            case "name" -> Sort.by(direction, "name");
-            case "age" -> Sort.by(direction, "age");
-            case "species" -> Sort.by(direction, "species");
-            case "createdAt", "created_at" -> Sort.by(direction, "createdAt");
-            default -> Sort.by(Sort.Direction.DESC, "createdAt");
-        };
     }
 }

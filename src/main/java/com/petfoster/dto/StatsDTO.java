@@ -107,4 +107,19 @@ public class StatsDTO {
         private long receivedReviews;
         private double averageRating;
     }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class MonthlyFostererStats {
+        private Long fostererId;
+        private String fostererUsername;
+        private String month;
+        private long completedCount;
+        private long totalCount;
+        private long reviewCount;
+        private double averageRating;
+        private double completionRate;
+    }
 }
