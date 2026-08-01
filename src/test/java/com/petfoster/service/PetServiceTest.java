@@ -1,6 +1,7 @@
 package com.petfoster.service;
 
 import com.petfoster.common.BusinessException;
+import com.petfoster.common.EntityLoader;
 import com.petfoster.dto.PetDTO;
 import com.petfoster.entity.Pet;
 import com.petfoster.entity.User;
@@ -19,6 +20,7 @@ import org.springframework.data.domain.Pageable;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -33,6 +35,12 @@ class PetServiceTest {
 
     @Mock
     private UserRepository userRepository;
+
+    @Mock
+    private FileStorageService fileStorageService;
+
+    @Mock
+    private EntityLoader entityLoader;
 
     @InjectMocks
     private PetService petService;
@@ -80,7 +88,7 @@ class PetServiceTest {
 
         when(petRepository.searchPets(isNull(), isNull(), isNull(), any(Pageable.class)))
                 .thenReturn(petPage);
-        when(userRepository.findAllById(anyList())).thenReturn(List.of(testOwner));
+        when(entityLoader.loadUserMap(anyList())).thenReturn(Map.of(1L, testOwner));
 
         var result = petService.getPets(0, 10, "createdAt,desc", null, null, null);
 
@@ -94,7 +102,7 @@ class PetServiceTest {
     @DisplayName("获取宠物详情 - 成功")
     void testGetPetById_Success() {
         when(petRepository.findById(1L)).thenReturn(Optional.of(testPet));
-        when(userRepository.findById(1L)).thenReturn(Optional.of(testOwner));
+        when(entityLoader.findUserOrNull(1L)).thenReturn(testOwner);
 
         PetDTO.PetResponse response = petService.getPetById(1L);
 
@@ -123,6 +131,7 @@ class PetServiceTest {
             saved.setId(2L);
             return saved;
         });
+        when(entityLoader.findUserOrNull(1L)).thenReturn(testOwner);
 
         PetDTO.PetResponse response = petService.createPet(1L, createRequest);
 
@@ -137,7 +146,7 @@ class PetServiceTest {
     void testUpdatePet_Success() {
         when(petRepository.findById(1L)).thenReturn(Optional.of(testPet));
         when(petRepository.save(any(Pet.class))).thenReturn(testPet);
-        when(userRepository.findById(1L)).thenReturn(Optional.of(testOwner));
+        when(entityLoader.findUserOrNull(1L)).thenReturn(testOwner);
 
         PetDTO.PetResponse response = petService.updatePet(1L, 1L, updateRequest);
 

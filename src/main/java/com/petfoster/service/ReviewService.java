@@ -1,29 +1,26 @@
 package com.petfoster.service;
 
 import com.petfoster.common.BusinessException;
+import com.petfoster.common.EntityLoader;
 import com.petfoster.common.PageResponse;
+import com.petfoster.common.PageUtils;
 import com.petfoster.dto.ReviewDTO;
 import com.petfoster.entity.FosterRequest;
 import com.petfoster.entity.FosterReview;
 import com.petfoster.entity.User;
 import com.petfoster.repository.FosterRequestRepository;
 import com.petfoster.repository.FosterReviewRepository;
-import com.petfoster.repository.UserRepository;
 import com.petfoster.util.EntityMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.util.StringUtils;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 @Slf4j
@@ -31,9 +28,12 @@ import java.util.stream.Stream;
 @RequiredArgsConstructor
 public class ReviewService {
 
+    private static final String DEFAULT_SORT_FIELD = "createdAt";
+    private static final Set<String> ALLOWED_SORT_FIELDS = Set.of("rating", "createdAt");
+
     private final FosterReviewRepository reviewRepository;
     private final FosterRequestRepository requestRepository;
-    private final UserRepository userRepository;
+    private final EntityLoader entityLoader;
 
     private int calculateOverallRating(int responsibility, int communication, int petCondition) {
         double avg = (responsibility + communication + petCondition) / 3.0;
@@ -45,8 +45,7 @@ public class ReviewService {
             Long requestId, Long reviewerId, Long revieweeId,
             Integer minRating, Integer maxRating) {
 
-        Sort sortObj = parseSort(sort);
-        Pageable pageable = PageRequest.of(page, size, sortObj);
+        Pageable pageable = PageUtils.buildPageable(page, size, sort, DEFAULT_SORT_FIELD, ALLOWED_SORT_FIELDS);
 
         Page<FosterReview> reviewPage = reviewRepository.searchReviews(
                 requestId, reviewerId, revieweeId, minRating, maxRating, pageable);
@@ -168,9 +167,8 @@ public class ReviewService {
     private PageResponse<ReviewDTO.ReviewResponse> buildPageResponse(Page<FosterReview> page) {
         Set<Long> userIds = page.getContent().stream()
                 .flatMap(r -> Stream.of(r.getReviewerId(), r.getRevieweeId()))
-                .collect(Collectors.toSet());
-        Map<Long, User> userMap = userRepository.findAllById(userIds).stream()
-                .collect(Collectors.toMap(User::getId, u -> u));
+                .collect(java.util.stream.Collectors.toSet());
+        Map<Long, User> userMap = entityLoader.loadUserMap(userIds);
 
         List<ReviewDTO.ReviewResponse> content = page.getContent().stream()
                 .map(r -> EntityMapper.toReviewResponse(
@@ -180,36 +178,14 @@ public class ReviewService {
                 ))
                 .toList();
 
-        return PageResponse.<ReviewDTO.ReviewResponse>builder()
-                .content(content)
-                .pageNumber(page.getNumber())
-                .pageSize(page.getSize())
-                .totalElements(page.getTotalElements())
-                .totalPages(page.getTotalPages())
-                .first(page.isFirst())
-                .last(page.isLast())
-                .build();
+        return PageUtils.toPageResponse(page, content);
     }
 
     private ReviewDTO.ReviewResponse buildSingleResponse(FosterReview r) {
-        User reviewer = userRepository.findById(r.getReviewerId()).orElse(null);
-        User reviewee = userRepository.findById(r.getRevieweeId()).orElse(null);
-        return EntityMapper.toReviewResponse(r, reviewer, reviewee);
-    }
-
-    private Sort parseSort(String sort) {
-        if (!StringUtils.hasText(sort)) {
-            return Sort.by(Sort.Direction.DESC, "createdAt");
-        }
-        String[] parts = sort.split(",");
-        String field = parts[0];
-        Sort.Direction direction = parts.length > 1 && "asc".equalsIgnoreCase(parts[1])
-                ? Sort.Direction.ASC : Sort.Direction.DESC;
-
-        return switch (field) {
-            case "rating" -> Sort.by(direction, "rating");
-            case "createdAt", "created_at" -> Sort.by(direction, "createdAt");
-            default -> Sort.by(Sort.Direction.DESC, "createdAt");
-        };
+        return EntityMapper.toReviewResponse(
+                r,
+                entityLoader.findUserOrNull(r.getReviewerId()),
+                entityLoader.findUserOrNull(r.getRevieweeId())
+        );
     }
 }

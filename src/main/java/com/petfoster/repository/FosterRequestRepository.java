@@ -1,5 +1,6 @@
 package com.petfoster.repository;
 
+import com.petfoster.common.DailyCountProjection;
 import com.petfoster.entity.FosterRequest;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -9,6 +10,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Repository
@@ -92,4 +94,46 @@ public interface FosterRequestRepository extends JpaRepository<FosterRequest, Lo
            "(r.ownerId = :userId OR r.fostererId = :userId) " +
            "AND r.status = com.petfoster.entity.FosterRequest$Status.Cancelled")
     long countCancelledByUserId(@Param("userId") Long userId);
+
+    @Query(value = "SELECT CAST(r.created_at AS date) AS date, COUNT(r.id) AS count " +
+           "FROM foster_requests r " +
+           "WHERE r.created_at >= :start AND r.created_at < :end " +
+           "GROUP BY CAST(r.created_at AS date) " +
+           "ORDER BY date", nativeQuery = true)
+    List<DailyCountProjection> countDailyByCreatedAtBetween(
+            @Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
+
+    @Query(value = "SELECT CAST(r.created_at AS date) AS date, COUNT(r.id) AS count " +
+           "FROM foster_requests r " +
+           "WHERE r.created_at >= :start AND r.created_at < :end " +
+           "AND r.status = 'Completed' " +
+           "GROUP BY CAST(r.created_at AS date) " +
+           "ORDER BY date", nativeQuery = true)
+    List<DailyCountProjection> countDailyCompletedByCreatedAtBetween(
+            @Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
+
+    long countByCreatedAtBetween(LocalDateTime start, LocalDateTime end);
+
+    @Query("SELECT r FROM FosterRequest r WHERE r.status = com.petfoster.entity.FosterRequest$Status.Completed")
+    List<FosterRequest> findAllCompleted();
+
+    @Query(value = "SELECT r.fosterer_id AS fostererId, " +
+           "DATE_FORMAT(r.end_date, '%Y-%m') AS month, " +
+           "SUM(CASE WHEN r.status = 'Completed' THEN 1 ELSE 0 END) AS completedCount, " +
+           "SUM(CASE WHEN r.status = 'Cancelled' THEN 1 ELSE 0 END) AS cancelledCount " +
+           "FROM foster_requests r " +
+           "WHERE r.fosterer_id IS NOT NULL " +
+           "AND r.end_date >= :start AND r.end_date < :end " +
+           "AND r.status IN ('Completed', 'Cancelled') " +
+           "GROUP BY r.fosterer_id, DATE_FORMAT(r.end_date, '%Y-%m')",
+           nativeQuery = true)
+    List<FostererMonthlyCount> aggregateMonthlyByFosterer(
+            @Param("start") LocalDate start, @Param("end") LocalDate end);
+
+    interface FostererMonthlyCount {
+        Long getFostererId();
+        String getMonth();
+        Long getCompletedCount();
+        Long getCancelledCount();
+    }
 }

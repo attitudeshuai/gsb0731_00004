@@ -12,6 +12,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/stats")
@@ -52,5 +53,13 @@ public class StatsController {
     @Operation(summary = "我的寄养统计", description = "获取当前登录用户的寄养统计：发布申请数、完成寄养数、收到评价数、平均评分")
     public ApiResponse<StatsDTO.UserFosterStats> getMyFosterStats(@AuthenticationPrincipal User user) {
         return ApiResponse.success(statsService.getUserFosterStats(user.getId()));
+    }
+
+    @GetMapping("/fosterers/monthly")
+    @Operation(summary = "寄养人月度统计", description = "按月份统计每个寄养人的完成单数、取消单数、完成率、平均评分和评价数，供管理后台评估寄养人可靠性")
+    public ApiResponse<List<StatsDTO.FostererMonthlyStats>> getFostererMonthlyStats(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate) {
+        return ApiResponse.success(statsService.getFostererMonthlyStats(startDate, endDate));
     }
 }

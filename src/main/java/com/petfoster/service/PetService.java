@@ -1,7 +1,9 @@
 package com.petfoster.service;
 
 import com.petfoster.common.BusinessException;
+import com.petfoster.common.EntityLoader;
 import com.petfoster.common.PageResponse;
+import com.petfoster.common.PageUtils;
 import com.petfoster.dto.PetDTO;
 import com.petfoster.entity.Pet;
 import com.petfoster.entity.User;
@@ -11,33 +13,35 @@ import com.petfoster.util.EntityMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.Set;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class PetService {
 
+    private static final String DEFAULT_SORT_FIELD = "createdAt";
+    private static final Set<String> ALLOWED_SORT_FIELDS = Set.of("name", "age", "species", "createdAt");
+
     private final PetRepository petRepository;
     private final UserRepository userRepository;
     private final FileStorageService fileStorageService;
+    private final EntityLoader entityLoader;
 
     public PageResponse<PetDTO.PetResponse> getPets(
             int page, int size, String sort, String name, String species, Long ownerId) {
 
-        Sort sortObj = parseSort(sort);
-        Pageable pageable = PageRequest.of(page, size, sortObj);
+        Pageable pageable = PageUtils.buildPageable(page, size, sort, DEFAULT_SORT_FIELD, ALLOWED_SORT_FIELDS);
 
         Page<Pet> petPage = petRepository.searchPets(
                 StringUtils.hasText(name) ? name : null,
@@ -46,55 +50,33 @@ public class PetService {
                 pageable
         );
 
-        List<Long> ownerIds = petPage.getContent().stream()
-                .map(Pet::getOwnerId)
-                .distinct()
-                .toList();
-        Map<Long, User> userMap = userRepository.findAllById(ownerIds).stream()
-                .collect(Collectors.toMap(User::getId, u -> u));
+        Map<Long, User> userMap = entityLoader.loadUserMap(
+                petPage.getContent().stream().map(Pet::getOwnerId).distinct().toList());
 
         List<PetDTO.PetResponse> content = petPage.getContent().stream()
                 .map(pet -> EntityMapper.toPetResponse(pet, userMap.get(pet.getOwnerId())))
                 .toList();
 
-        return PageResponse.<PetDTO.PetResponse>builder()
-                .content(content)
-                .pageNumber(petPage.getNumber())
-                .pageSize(petPage.getSize())
-                .totalElements(petPage.getTotalElements())
-                .totalPages(petPage.getTotalPages())
-                .first(petPage.isFirst())
-                .last(petPage.isLast())
-                .build();
+        return PageUtils.toPageResponse(petPage, content);
     }
 
     public PetDTO.PetResponse getPetById(Long id) {
         Pet pet = petRepository.findById(id)
                 .orElseThrow(() -> BusinessException.notFound("宠物不存在"));
-        User owner = userRepository.findById(pet.getOwnerId()).orElse(null);
-        return EntityMapper.toPetResponse(pet, owner);
+        return EntityMapper.toPetResponse(pet, entityLoader.findUserOrNull(pet.getOwnerId()));
     }
 
     public PageResponse<PetDTO.PetResponse> getMyPets(Long userId, int page, int size, String sort) {
-        Sort sortObj = parseSort(sort);
-        Pageable pageable = PageRequest.of(page, size, sortObj);
+        Pageable pageable = PageUtils.buildPageable(page, size, sort, DEFAULT_SORT_FIELD, ALLOWED_SORT_FIELDS);
 
         Page<Pet> petPage = petRepository.findByOwnerId(userId, pageable);
-        User owner = userRepository.findById(userId).orElse(null);
+        User owner = entityLoader.findUserOrNull(userId);
 
         List<PetDTO.PetResponse> content = petPage.getContent().stream()
                 .map(pet -> EntityMapper.toPetResponse(pet, owner))
                 .toList();
 
-        return PageResponse.<PetDTO.PetResponse>builder()
-                .content(content)
-                .pageNumber(petPage.getNumber())
-                .pageSize(petPage.getSize())
-                .totalElements(petPage.getTotalElements())
-                .totalPages(petPage.getTotalPages())
-                .first(petPage.isFirst())
-                .last(petPage.isLast())
-                .build();
+        return PageUtils.toPageResponse(petPage, content);
     }
 
     @Transactional
@@ -103,7 +85,7 @@ public class PetService {
     }
 
     @Transactional
-    public PetDTO.PetResponse createPet(Long userId, PetDTO.CreatePetRequest request, org.springframework.web.multipart.MultipartFile photo) {
+    public PetDTO.PetResponse createPet(Long userId, PetDTO.CreatePetRequest request, MultipartFile photo) {
         userRepository.findById(userId)
                 .orElseThrow(() -> BusinessException.notFound("用户不存在"));
 
@@ -135,8 +117,7 @@ public class PetService {
             pet = petRepository.save(pet);
             log.info("宠物创建成功: petId={}, ownerId={}, photoUrl={}", pet.getId(), userId, finalPhotoUrl);
 
-            User owner = userRepository.findById(userId).orElse(null);
-            return EntityMapper.toPetResponse(pet, owner);
+            return EntityMapper.toPetResponse(pet, entityLoader.findUserOrNull(userId));
         } catch (Exception e) {
             if (uploadedPhotoUrl != null) {
                 fileStorageService.deleteFile(uploadedPhotoUrl);
@@ -152,7 +133,7 @@ public class PetService {
     }
 
     @Transactional
-    public PetDTO.PetResponse updatePet(Long userId, Long petId, PetDTO.UpdatePetRequest request, org.springframework.web.multipart.MultipartFile photo) {
+    public PetDTO.PetResponse updatePet(Long userId, Long petId, PetDTO.UpdatePetRequest request, MultipartFile photo) {
         Pet pet = petRepository.findById(petId)
                 .orElseThrow(() -> BusinessException.notFound("宠物不存在"));
 
@@ -218,8 +199,7 @@ public class PetService {
                 });
             }
 
-            User owner = userRepository.findById(pet.getOwnerId()).orElse(null);
-            return EntityMapper.toPetResponse(pet, owner);
+            return EntityMapper.toPetResponse(pet, entityLoader.findUserOrNull(pet.getOwnerId()));
         } catch (Exception e) {
             if (newUploadedPhotoUrl != null) {
                 fileStorageService.deleteFile(newUploadedPhotoUrl);
@@ -247,23 +227,5 @@ public class PetService {
             fileStorageService.deleteFile(photoUrl);
             log.info("宠物照片已清理: petId={}, photoUrl={}", petId, photoUrl);
         }
-    }
-
-    private Sort parseSort(String sort) {
-        if (!StringUtils.hasText(sort)) {
-            return Sort.by(Sort.Direction.DESC, "createdAt");
-        }
-        String[] parts = sort.split(",");
-        String field = parts[0];
-        Sort.Direction direction = parts.length > 1 && "asc".equalsIgnoreCase(parts[1])
-                ? Sort.Direction.ASC : Sort.Direction.DESC;
-
-        return switch (field) {
-            case "name" -> Sort.by(direction, "name");
-            case "age" -> Sort.by(direction, "age");
-            case "species" -> Sort.by(direction, "species");
-            case "createdAt", "created_at" -> Sort.by(direction, "createdAt");
-            default -> Sort.by(Sort.Direction.DESC, "createdAt");
-        };
     }
 }
