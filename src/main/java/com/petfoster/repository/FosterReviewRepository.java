@@ -1,5 +1,6 @@
 package com.petfoster.repository;
 
+import com.petfoster.common.DailyCountProjection;
 import com.petfoster.entity.FosterReview;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -8,6 +9,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Repository
@@ -44,4 +46,49 @@ public interface FosterReviewRepository extends JpaRepository<FosterReview, Long
     Double findAveragePetConditionByRevieweeId(@Param("revieweeId") Long revieweeId);
 
     long countByRevieweeId(Long revieweeId);
+
+    @Query(value = "SELECT CAST(r.created_at AS date) AS date, COUNT(r.id) AS count " +
+           "FROM foster_reviews r " +
+           "WHERE r.created_at >= :start AND r.created_at < :end " +
+           "GROUP BY CAST(r.created_at AS date) " +
+           "ORDER BY date", nativeQuery = true)
+    List<DailyCountProjection> countDailyByCreatedAtBetween(
+            @Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
+
+    @Query("SELECT r.revieweeId AS userId, " +
+           "AVG(r.rating) AS avgRating, " +
+           "AVG(r.responsibilityRating) AS avgResponsibility, " +
+           "AVG(r.communicationRating) AS avgCommunication, " +
+           "AVG(r.petConditionRating) AS avgPetCondition, " +
+           "COUNT(r) AS reviewCount " +
+           "FROM FosterReview r " +
+           "GROUP BY r.revieweeId")
+    List<ReviewAggregation> aggregateAllByReviewee();
+
+    interface ReviewAggregation {
+        Long getUserId();
+        Double getAvgRating();
+        Double getAvgResponsibility();
+        Double getAvgCommunication();
+        Double getAvgPetCondition();
+        Long getReviewCount();
+    }
+
+    @Query(value = "SELECT r.reviewee_id AS userId, " +
+           "DATE_FORMAT(r.created_at, '%Y-%m') AS month, " +
+           "AVG(r.rating) AS avgRating, " +
+           "COUNT(r.id) AS reviewCount " +
+           "FROM foster_reviews r " +
+           "WHERE r.created_at >= :start AND r.created_at < :end " +
+           "GROUP BY r.reviewee_id, DATE_FORMAT(r.created_at, '%Y-%m')",
+           nativeQuery = true)
+    List<MonthlyReviewAggregation> aggregateMonthlyByReviewee(
+            @Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
+
+    interface MonthlyReviewAggregation {
+        Long getUserId();
+        String getMonth();
+        Double getAvgRating();
+        Long getReviewCount();
+    }
 }
