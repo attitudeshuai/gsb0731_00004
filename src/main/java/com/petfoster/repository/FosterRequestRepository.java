@@ -9,6 +9,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Repository
@@ -54,6 +55,38 @@ public interface FosterRequestRepository extends JpaRepository<FosterRequest, Lo
     );
 
     long countByStatus(FosterRequest.Status status);
+
+    List<FosterRequest> findByStatus(FosterRequest.Status status);
+
+    @Query("SELECT COUNT(r) FROM FosterRequest r WHERE r.createdAt >= :from AND r.createdAt < :to")
+    long countCreatedBetween(@Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
+
+    @Query("SELECT FUNCTION('DATE', r.createdAt), COUNT(r) FROM FosterRequest r " +
+           "WHERE r.createdAt >= :from AND r.createdAt < :to " +
+           "GROUP BY FUNCTION('DATE', r.createdAt)")
+    List<Object[]> countGroupByDate(@Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
+
+    @Query("SELECT FUNCTION('DATE', r.createdAt), COUNT(r) FROM FosterRequest r " +
+           "WHERE r.status = :status AND r.createdAt >= :from AND r.createdAt < :to " +
+           "GROUP BY FUNCTION('DATE', r.createdAt)")
+    List<Object[]> countByStatusGroupByDate(@Param("status") FosterRequest.Status status,
+                                            @Param("from") LocalDateTime from,
+                                            @Param("to") LocalDateTime to);
+
+    @Query("SELECT COALESCE(NULLIF(p.breed, ''), '未知品种'), MIN(p.species), COUNT(r) " +
+           "FROM FosterRequest r JOIN Pet p ON r.petId = p.id " +
+           "GROUP BY COALESCE(NULLIF(p.breed, ''), '未知品种') " +
+           "ORDER BY COUNT(r) DESC, COALESCE(NULLIF(p.breed, ''), '未知品种')")
+    List<Object[]> countGroupByBreed();
+
+    @Query("SELECT r.fostererId, " +
+           "SUM(CASE WHEN r.status = com.petfoster.entity.FosterRequest$Status.Completed THEN 1 ELSE 0 END), " +
+           "COUNT(r) FROM FosterRequest r " +
+           "WHERE r.fostererId IS NOT NULL AND r.endDate >= :from AND r.endDate <= :to " +
+           "GROUP BY r.fostererId " +
+           "ORDER BY SUM(CASE WHEN r.status = com.petfoster.entity.FosterRequest$Status.Completed THEN 1 ELSE 0 END) DESC, " +
+           "COUNT(r) DESC")
+    List<Object[]> countGroupByFosterer(@Param("from") LocalDate from, @Param("to") LocalDate to);
 
     @Query("SELECT COUNT(r) FROM FosterRequest r WHERE r.ownerId = :userId OR r.fostererId = :userId")
     long countByUserId(@Param("userId") Long userId);
