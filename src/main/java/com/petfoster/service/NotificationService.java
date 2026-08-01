@@ -2,6 +2,7 @@ package com.petfoster.service;
 
 import com.petfoster.common.BusinessException;
 import com.petfoster.common.PageResponse;
+import com.petfoster.common.SortResolver;
 import com.petfoster.dto.NotificationDTO;
 import com.petfoster.entity.FailedNotification;
 import com.petfoster.entity.Notification;
@@ -30,6 +31,13 @@ public class NotificationService {
     private final NotificationRepository notificationRepository;
     private final FailedNotificationRepository failedNotificationRepository;
 
+    private static final SortResolver SORT_RESOLVER = SortResolver.withDefault("createdAt")
+            .allow("createdAt")
+            .alias("created_at", "createdAt")
+            .allow("isRead")
+            .alias("is_read", "isRead")
+            .build();
+
     @Transactional
     public void sendNotification(Long userId, Notification.Type type, String title, String content,
                                   Long relatedId, Notification.RelatedType relatedType) {
@@ -49,7 +57,7 @@ public class NotificationService {
     public PageResponse<NotificationDTO.NotificationResponse> getMyNotifications(
             Long userId, int page, int size, String sort, Boolean isRead) {
 
-        Sort sortObj = parseSort(sort);
+        Sort sortObj = SORT_RESOLVER.resolve(sort);
         Pageable pageable = PageRequest.of(page, size, sortObj);
 
         Page<Notification> notificationPage;
@@ -59,19 +67,7 @@ public class NotificationService {
             notificationPage = notificationRepository.findByUserId(userId, pageable);
         }
 
-        List<NotificationDTO.NotificationResponse> content = notificationPage.getContent().stream()
-                .map(EntityMapper::toNotificationResponse)
-                .toList();
-
-        return PageResponse.<NotificationDTO.NotificationResponse>builder()
-                .content(content)
-                .pageNumber(notificationPage.getNumber())
-                .pageSize(notificationPage.getSize())
-                .totalElements(notificationPage.getTotalElements())
-                .totalPages(notificationPage.getTotalPages())
-                .first(notificationPage.isFirst())
-                .last(notificationPage.isLast())
-                .build();
+        return PageResponse.from(notificationPage, EntityMapper::toNotificationResponse);
     }
 
     public NotificationDTO.UnreadCountResponse getUnreadCount(Long userId) {
@@ -176,21 +172,5 @@ public class NotificationService {
     private String truncate(String str, int maxLen) {
         if (str == null) return null;
         return str.length() <= maxLen ? str : str.substring(0, maxLen);
-    }
-
-    private Sort parseSort(String sort) {
-        if (!StringUtils.hasText(sort)) {
-            return Sort.by(Sort.Direction.DESC, "createdAt");
-        }
-        String[] parts = sort.split(",");
-        String field = parts[0];
-        Sort.Direction direction = parts.length > 1 && "asc".equalsIgnoreCase(parts[1])
-                ? Sort.Direction.ASC : Sort.Direction.DESC;
-
-        return switch (field) {
-            case "createdAt", "created_at" -> Sort.by(direction, "createdAt");
-            case "isRead", "is_read" -> Sort.by(direction, "isRead");
-            default -> Sort.by(Sort.Direction.DESC, "createdAt");
-        };
     }
 }

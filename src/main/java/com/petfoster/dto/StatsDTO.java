@@ -107,4 +107,19 @@ public class StatsDTO {
         private long receivedReviews;
         private double averageRating;
     }
+
+    /** 管理后台：单个寄养人在某个月份的绩效指标。 */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class FostererMonthlyPerformance {
+        private String month;              // yyyy-MM
+        private Long fostererId;
+        private String fostererUsername;
+        private long completedCount;       // 该月完成的寄养单数
+        private long totalCount;           // 该月承接的寄养单数（不限状态）
+        private double completionRate;     // 完成率（百分比，0-100，保留两位）
+        private double averageRating;      // 该月收到评价的平均分（保留两位）
+    }
 }
