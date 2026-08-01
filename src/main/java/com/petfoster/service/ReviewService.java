@@ -2,6 +2,7 @@ package com.petfoster.service;
 
 import com.petfoster.common.BusinessException;
 import com.petfoster.common.PageResponse;
+import com.petfoster.common.PageSort;
 import com.petfoster.dto.ReviewDTO;
 import com.petfoster.entity.FosterRequest;
 import com.petfoster.entity.FosterReview;
@@ -9,16 +10,13 @@ import com.petfoster.entity.User;
 import com.petfoster.repository.FosterRequestRepository;
 import com.petfoster.repository.FosterReviewRepository;
 import com.petfoster.repository.UserRepository;
+import com.petfoster.util.EntityCollections;
 import com.petfoster.util.EntityMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.util.StringUtils;
 
 import java.util.List;
 import java.util.Map;
@@ -30,6 +28,13 @@ import java.util.stream.Stream;
 @Service
 @RequiredArgsConstructor
 public class ReviewService {
+
+    private static final String DEFAULT_SORT_FIELD = "createdAt";
+    private static final Map<String, String> SORT_FIELDS = Map.of(
+            "rating", "rating",
+            "createdAt", "createdAt",
+            "created_at", "createdAt"
+    );
 
     private final FosterReviewRepository reviewRepository;
     private final FosterRequestRepository requestRepository;
@@ -45,8 +50,7 @@ public class ReviewService {
             Long requestId, Long reviewerId, Long revieweeId,
             Integer minRating, Integer maxRating) {
 
-        Sort sortObj = parseSort(sort);
-        Pageable pageable = PageRequest.of(page, size, sortObj);
+        var pageable = PageSort.of(page, size, sort, DEFAULT_SORT_FIELD, SORT_FIELDS);
 
         Page<FosterReview> reviewPage = reviewRepository.searchReviews(
                 requestId, reviewerId, revieweeId, minRating, maxRating, pageable);
@@ -169,47 +173,19 @@ public class ReviewService {
         Set<Long> userIds = page.getContent().stream()
                 .flatMap(r -> Stream.of(r.getReviewerId(), r.getRevieweeId()))
                 .collect(Collectors.toSet());
-        Map<Long, User> userMap = userRepository.findAllById(userIds).stream()
-                .collect(Collectors.toMap(User::getId, u -> u));
+        Map<Long, User> userMap = EntityCollections.toIdMap(
+                userRepository.findAllById(userIds), User::getId);
 
-        List<ReviewDTO.ReviewResponse> content = page.getContent().stream()
-                .map(r -> EntityMapper.toReviewResponse(
-                        r,
-                        userMap.get(r.getReviewerId()),
-                        userMap.get(r.getRevieweeId())
-                ))
-                .toList();
-
-        return PageResponse.<ReviewDTO.ReviewResponse>builder()
-                .content(content)
-                .pageNumber(page.getNumber())
-                .pageSize(page.getSize())
-                .totalElements(page.getTotalElements())
-                .totalPages(page.getTotalPages())
-                .first(page.isFirst())
-                .last(page.isLast())
-                .build();
+        return PageResponse.from(page, r -> EntityMapper.toReviewResponse(
+                r,
+                userMap.get(r.getReviewerId()),
+                userMap.get(r.getRevieweeId())
+        ));
     }
 
     private ReviewDTO.ReviewResponse buildSingleResponse(FosterReview r) {
         User reviewer = userRepository.findById(r.getReviewerId()).orElse(null);
         User reviewee = userRepository.findById(r.getRevieweeId()).orElse(null);
         return EntityMapper.toReviewResponse(r, reviewer, reviewee);
-    }
-
-    private Sort parseSort(String sort) {
-        if (!StringUtils.hasText(sort)) {
-            return Sort.by(Sort.Direction.DESC, "createdAt");
-        }
-        String[] parts = sort.split(",");
-        String field = parts[0];
-        Sort.Direction direction = parts.length > 1 && "asc".equalsIgnoreCase(parts[1])
-                ? Sort.Direction.ASC : Sort.Direction.DESC;
-
-        return switch (field) {
-            case "rating" -> Sort.by(direction, "rating");
-            case "createdAt", "created_at" -> Sort.by(direction, "createdAt");
-            default -> Sort.by(Sort.Direction.DESC, "createdAt");
-        };
     }
 }

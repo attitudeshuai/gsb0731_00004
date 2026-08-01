@@ -2,28 +2,25 @@ package com.petfoster.service;
 
 import com.petfoster.common.BusinessException;
 import com.petfoster.common.PageResponse;
+import com.petfoster.common.PageSort;
 import com.petfoster.dto.FosterRequestDTO;
 import com.petfoster.dto.ReputationDTO;
 import com.petfoster.entity.FosterRequest;
 import com.petfoster.entity.Notification;
 import com.petfoster.entity.Pet;
 import com.petfoster.entity.User;
-import com.petfoster.event.NotificationEvent;
 import com.petfoster.repository.FosterRequestRepository;
 import com.petfoster.repository.NotificationRepository;
 import com.petfoster.repository.PetRepository;
 import com.petfoster.repository.UserRepository;
+import com.petfoster.service.support.NotificationHelper;
+import com.petfoster.util.EntityCollections;
 import com.petfoster.util.EntityMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.util.StringUtils;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -37,11 +34,22 @@ import java.util.stream.Stream;
 @RequiredArgsConstructor
 public class FosterRequestService {
 
+    private static final String DEFAULT_SORT_FIELD = "createdAt";
+    private static final Map<String, String> SORT_FIELDS = Map.of(
+            "startDate", "startDate",
+            "start_date", "startDate",
+            "endDate", "endDate",
+            "end_date", "endDate",
+            "status", "status",
+            "createdAt", "createdAt",
+            "created_at", "createdAt"
+    );
+
     private final FosterRequestRepository requestRepository;
     private final PetRepository petRepository;
     private final UserRepository userRepository;
     private final NotificationRepository notificationRepository;
-    private final ApplicationEventPublisher eventPublisher;
+    private final NotificationHelper notificationHelper;
     private final ReputationService reputationService;
 
     private static final Set<FosterRequest.Status> ALLOWED_FROM_PENDING = Set.of(
@@ -56,8 +64,7 @@ public class FosterRequestService {
             FosterRequest.Status status, Long ownerId, Long fostererId, Long petId,
             LocalDate startDateFrom, LocalDate startDateTo, String breed) {
 
-        Sort sortObj = parseSort(sort);
-        Pageable pageable = PageRequest.of(page, size, sortObj);
+        var pageable = PageSort.of(page, size, sort, DEFAULT_SORT_FIELD, SORT_FIELDS);
 
         Page<FosterRequest> requestPage = requestRepository.searchRequests(
                 status, ownerId, fostererId, petId,
@@ -76,8 +83,7 @@ public class FosterRequestService {
             Long userId, int page, int size, String sort,
             FosterRequest.Status status, LocalDate startDateFrom, LocalDate startDateTo, String breed) {
 
-        Sort sortObj = parseSort(sort);
-        Pageable pageable = PageRequest.of(page, size, sortObj);
+        var pageable = PageSort.of(page, size, sort, DEFAULT_SORT_FIELD, SORT_FIELDS);
 
         Page<FosterRequest> requestPage = requestRepository.findByUserIdWithFilters(
                 userId, status, startDateFrom, startDateTo, breed, pageable);
@@ -97,9 +103,7 @@ public class FosterRequestService {
                     String fostererName = null;
                     if (r.getFostererId() != null) {
                         User fosterer = userRepository.findById(r.getFostererId()).orElse(null);
-                        if (fosterer != null) {
-                            fostererName = fosterer.getUsername();
-                        }
+                        fostererName = EntityMapper.usernameOr(fosterer, null);
                     }
                     return FosterRequestDTO.ConflictInfo.builder()
                             .requestId(r.getId())
@@ -174,20 +178,18 @@ public class FosterRequestService {
         log.info("寄养申请创建成功: requestId={}, ownerId={}", request.getId(), userId);
 
         if (req.getFostererId() != null) {
-            String petName = pet.getName();
-            User owner = userRepository.findById(userId).orElse(null);
-            String ownerName = owner != null ? owner.getUsername() : "某位主人";
-            eventPublisher.publishEvent(new NotificationEvent(List.of(
-                    NotificationEvent.entry(
-                            req.getFostererId(),
+            String petName = EntityMapper.petNameOr(pet, "宠物");
+            String ownerName = EntityMapper.usernameOr(
+                    userRepository.findById(userId).orElse(null), "某位主人");
+            notificationHelper.builder()
+                    .add(req.getFostererId(),
                             Notification.Type.FOSTER_REQUEST_CREATED,
                             "收到新的寄养申请",
                             String.format("%s 邀请您帮忙寄养宠物「%s」，寄养时间：%s 至 %s",
                                     ownerName, petName, req.getStartDate(), req.getEndDate()),
                             request.getId(),
-                            Notification.RelatedType.FOSTER_REQUEST
-                    )
-            )));
+                            Notification.RelatedType.FOSTER_REQUEST)
+                    .publish();
         }
 
         return buildSingleResponse(request);
@@ -263,38 +265,25 @@ public class FosterRequestService {
         log.info("寄养申请状态变更: requestId={}, 旧状态={}, 新状态={}",
                 requestId, oldStatus, newStatus);
 
-        Pet pet = petRepository.findById(request.getPetId()).orElse(null);
-        String petName = pet != null ? pet.getName() : "宠物";
-        User operator = userRepository.findById(userId).orElse(null);
-        String operatorName = operator != null ? operator.getUsername() : "某人";
+        String petName = EntityMapper.petNameOr(
+                petRepository.findById(request.getPetId()).orElse(null), "宠物");
+        String operatorName = EntityMapper.usernameOr(
+                userRepository.findById(userId).orElse(null), "某人");
 
         String statusText = getStatusText(newStatus);
         String title = String.format("寄养申请状态变更：%s", statusText);
         String content = String.format("%s 将宠物「%s」的寄养申请状态更新为「%s」",
                 operatorName, petName, statusText);
 
-        List<NotificationEvent.NotificationEntry> entries = new java.util.ArrayList<>();
-        if (!request.getOwnerId().equals(userId)) {
-            entries.add(NotificationEvent.entry(
-                    request.getOwnerId(),
-                    Notification.Type.FOSTER_REQUEST_STATUS,
-                    title, content,
-                    request.getId(),
-                    Notification.RelatedType.FOSTER_REQUEST
-            ));
-        }
-        if (request.getFostererId() != null && !request.getFostererId().equals(userId)) {
-            entries.add(NotificationEvent.entry(
-                    request.getFostererId(),
-                    Notification.Type.FOSTER_REQUEST_STATUS,
-                    title, content,
-                    request.getId(),
-                    Notification.RelatedType.FOSTER_REQUEST
-            ));
-        }
-        if (!entries.isEmpty()) {
-            eventPublisher.publishEvent(new NotificationEvent(entries));
-        }
+        notificationHelper.builder()
+                .add(!request.getOwnerId().equals(userId) ? request.getOwnerId() : null,
+                        Notification.Type.FOSTER_REQUEST_STATUS,
+                        title, content, request.getId(), Notification.RelatedType.FOSTER_REQUEST)
+                .add(request.getFostererId() != null && !request.getFostererId().equals(userId)
+                                ? request.getFostererId() : null,
+                        Notification.Type.FOSTER_REQUEST_STATUS,
+                        title, content, request.getId(), Notification.RelatedType.FOSTER_REQUEST)
+                .publish();
 
         return buildSingleResponse(request);
     }
@@ -347,29 +336,17 @@ public class FosterRequestService {
                 .filter(id -> id != null)
                 .collect(Collectors.toSet());
 
-        Map<Long, Pet> petMap = petRepository.findAllById(petIds).stream()
-                .collect(Collectors.toMap(Pet::getId, p -> p));
-        Map<Long, User> userMap = userRepository.findAllById(userIds).stream()
-                .collect(Collectors.toMap(User::getId, u -> u));
+        Map<Long, Pet> petMap = EntityCollections.toIdMap(
+                petRepository.findAllById(petIds), Pet::getId);
+        Map<Long, User> userMap = EntityCollections.toIdMap(
+                userRepository.findAllById(userIds), User::getId);
 
-        List<FosterRequestDTO.RequestResponse> content = page.getContent().stream()
-                .map(r -> EntityMapper.toFosterRequestResponse(
-                        r,
-                        petMap.get(r.getPetId()),
-                        userMap.get(r.getOwnerId()),
-                        r.getFostererId() != null ? userMap.get(r.getFostererId()) : null
-                ))
-                .toList();
-
-        return PageResponse.<FosterRequestDTO.RequestResponse>builder()
-                .content(content)
-                .pageNumber(page.getNumber())
-                .pageSize(page.getSize())
-                .totalElements(page.getTotalElements())
-                .totalPages(page.getTotalPages())
-                .first(page.isFirst())
-                .last(page.isLast())
-                .build();
+        return PageResponse.from(page, r -> EntityMapper.toFosterRequestResponse(
+                r,
+                petMap.get(r.getPetId()),
+                userMap.get(r.getOwnerId()),
+                r.getFostererId() != null ? userMap.get(r.getFostererId()) : null
+        ));
     }
 
     private FosterRequestDTO.RequestResponse buildSingleResponse(FosterRequest r) {
@@ -404,31 +381,21 @@ public class FosterRequestService {
             log.info("寄养申请超时自动取消: requestId={}, startDate={}, 超时天数={}",
                     request.getId(), request.getStartDate(), timeoutDays);
 
-            Pet pet = petRepository.findById(request.getPetId()).orElse(null);
-            String petName = pet != null ? pet.getName() : "宠物";
+            String petName = EntityMapper.petNameOr(
+                    petRepository.findById(request.getPetId()).orElse(null), "宠物");
             String title = "寄养申请超时自动取消";
             String content = String.format(
                     "宠物「%s」的寄养申请因批准后超过 %d 天未开始，已自动取消（寄养开始日期：%s）",
                     petName, timeoutDays, request.getStartDate());
 
-            List<NotificationEvent.NotificationEntry> entries = new java.util.ArrayList<>();
-            entries.add(NotificationEvent.entry(
-                    request.getOwnerId(),
-                    Notification.Type.FOSTER_REQUEST_TIMEOUT,
-                    title, content,
-                    request.getId(),
-                    Notification.RelatedType.FOSTER_REQUEST
-            ));
-            if (request.getFostererId() != null) {
-                entries.add(NotificationEvent.entry(
-                        request.getFostererId(),
-                        Notification.Type.FOSTER_REQUEST_TIMEOUT,
-                        title, content,
-                        request.getId(),
-                        Notification.RelatedType.FOSTER_REQUEST
-                ));
-            }
-            eventPublisher.publishEvent(new NotificationEvent(entries));
+            notificationHelper.builder()
+                    .add(request.getOwnerId(),
+                            Notification.Type.FOSTER_REQUEST_TIMEOUT,
+                            title, content, request.getId(), Notification.RelatedType.FOSTER_REQUEST)
+                    .add(request.getFostererId(),
+                            Notification.Type.FOSTER_REQUEST_TIMEOUT,
+                            title, content, request.getId(), Notification.RelatedType.FOSTER_REQUEST)
+                    .publish();
         }
 
         return expiredRequests.size();
@@ -441,15 +408,15 @@ public class FosterRequestService {
 
         int reminderCount = 0;
         for (FosterRequest request : requests) {
-            Pet pet = petRepository.findById(request.getPetId()).orElse(null);
-            String petName = pet != null ? pet.getName() : "宠物";
+            String petName = EntityMapper.petNameOr(
+                    petRepository.findById(request.getPetId()).orElse(null), "宠物");
 
             String title = String.format("寄养归还提醒：还有 %d 天", daysBefore);
             String content = String.format(
                     "宠物「%s」的寄养将于 %s 到期，请记得按时归还宠物，感谢您的配合！",
                     petName, request.getEndDate());
 
-            List<NotificationEvent.NotificationEntry> entries = new java.util.ArrayList<>();
+            NotificationHelper.Builder builder = notificationHelper.builder();
 
             boolean ownerReminded = notificationRepository.existsByUserIdAndTypeAndRelatedIdAndRelatedType(
                     request.getOwnerId(),
@@ -458,13 +425,9 @@ public class FosterRequestService {
                     Notification.RelatedType.FOSTER_REQUEST
             );
             if (!ownerReminded) {
-                entries.add(NotificationEvent.entry(
-                        request.getOwnerId(),
+                builder.add(request.getOwnerId(),
                         Notification.Type.FOSTER_RETURN_REMINDER,
-                        title, content,
-                        request.getId(),
-                        Notification.RelatedType.FOSTER_REQUEST
-                ));
+                        title, content, request.getId(), Notification.RelatedType.FOSTER_REQUEST);
             }
 
             if (request.getFostererId() != null) {
@@ -475,42 +438,20 @@ public class FosterRequestService {
                         Notification.RelatedType.FOSTER_REQUEST
                 );
                 if (!fostererReminded) {
-                    entries.add(NotificationEvent.entry(
-                            request.getFostererId(),
+                    builder.add(request.getFostererId(),
                             Notification.Type.FOSTER_RETURN_REMINDER,
-                            title, content,
-                            request.getId(),
-                            Notification.RelatedType.FOSTER_REQUEST
-                    ));
+                            title, content, request.getId(), Notification.RelatedType.FOSTER_REQUEST);
                 }
             }
 
-            if (!entries.isEmpty()) {
-                eventPublisher.publishEvent(new NotificationEvent(entries));
-                reminderCount += entries.size();
+            int sent = builder.publish();
+            reminderCount += sent;
+            if (sent > 0) {
                 log.info("寄养归还提醒已发送: requestId={}, 提前天数={}, 接收人数={}",
-                        request.getId(), daysBefore, entries.size());
+                        request.getId(), daysBefore, sent);
             }
         }
 
         return reminderCount;
-    }
-
-    private Sort parseSort(String sort) {
-        if (!StringUtils.hasText(sort)) {
-            return Sort.by(Sort.Direction.DESC, "createdAt");
-        }
-        String[] parts = sort.split(",");
-        String field = parts[0];
-        Sort.Direction direction = parts.length > 1 && "asc".equalsIgnoreCase(parts[1])
-                ? Sort.Direction.ASC : Sort.Direction.DESC;
-
-        return switch (field) {
-            case "startDate", "start_date" -> Sort.by(direction, "startDate");
-            case "endDate", "end_date" -> Sort.by(direction, "endDate");
-            case "status" -> Sort.by(direction, "status");
-            case "createdAt", "created_at" -> Sort.by(direction, "createdAt");
-            default -> Sort.by(Sort.Direction.DESC, "createdAt");
-        };
     }
 }

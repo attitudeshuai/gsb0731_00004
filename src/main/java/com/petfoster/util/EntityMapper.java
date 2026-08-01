@@ -18,6 +18,14 @@ public class EntityMapper {
         return user != null ? user.getUsername() : null;
     }
 
+    public static String usernameOr(User user, String defaultName) {
+        return user != null ? user.getUsername() : defaultName;
+    }
+
+    public static String petNameOr(Pet pet, String defaultName) {
+        return pet != null ? pet.getName() : defaultName;
+    }
+
     public static AuthDTO.UserInfo toUserInfo(User user) {
         return new AuthDTO.UserInfo(
                 user.getId(),

@@ -1,5 +1,6 @@
 package com.petfoster.event;
 
+import com.petfoster.common.MoreStrings;
 import com.petfoster.entity.FailedNotification;
 import com.petfoster.repository.FailedNotificationRepository;
 import com.petfoster.service.NotificationService;
@@ -69,7 +70,7 @@ public class NotificationEventListener {
                 .retryCount(0)
                 .maxRetries(MAX_RETRIES)
                 .status(FailedNotification.Status.PENDING)
-                .lastError(truncate(e.getMessage(), 2000))
+                .lastError(MoreStrings.truncate(e.getMessage(), 2000))
                 .nextRetryAt(LocalDateTime.now().plusMinutes(5))
                 .build();
         failedNotificationRepository.save(failed);
@@ -81,10 +82,5 @@ public class NotificationEventListener {
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
         }
-    }
-
-    private String truncate(String str, int maxLen) {
-        if (str == null) return null;
-        return str.length() <= maxLen ? str : str.substring(0, maxLen);
     }
 }
