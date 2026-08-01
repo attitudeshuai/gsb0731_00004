@@ -2,6 +2,7 @@ package com.petfoster.service;
 
 import com.petfoster.common.BusinessException;
 import com.petfoster.common.PageResponse;
+import com.petfoster.common.SortResolver;
 import com.petfoster.dto.ReviewDTO;
 import com.petfoster.entity.FosterRequest;
 import com.petfoster.entity.FosterReview;
@@ -18,9 +19,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.util.StringUtils;
 
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -34,6 +33,13 @@ public class ReviewService {
     private final FosterReviewRepository reviewRepository;
     private final FosterRequestRepository requestRepository;
     private final UserRepository userRepository;
+    private final LookupService lookupService;
+
+    private static final SortResolver SORT_RESOLVER = SortResolver.withDefault("createdAt")
+            .allow("rating")
+            .allow("createdAt")
+            .alias("created_at", "createdAt")
+            .build();
 
     private int calculateOverallRating(int responsibility, int communication, int petCondition) {
         double avg = (responsibility + communication + petCondition) / 3.0;
@@ -45,7 +51,7 @@ public class ReviewService {
             Long requestId, Long reviewerId, Long revieweeId,
             Integer minRating, Integer maxRating) {
 
-        Sort sortObj = parseSort(sort);
+        Sort sortObj = SORT_RESOLVER.resolve(sort);
         Pageable pageable = PageRequest.of(page, size, sortObj);
 
         Page<FosterReview> reviewPage = reviewRepository.searchReviews(
@@ -172,44 +178,16 @@ public class ReviewService {
         Map<Long, User> userMap = userRepository.findAllById(userIds).stream()
                 .collect(Collectors.toMap(User::getId, u -> u));
 
-        List<ReviewDTO.ReviewResponse> content = page.getContent().stream()
-                .map(r -> EntityMapper.toReviewResponse(
-                        r,
-                        userMap.get(r.getReviewerId()),
-                        userMap.get(r.getRevieweeId())
-                ))
-                .toList();
-
-        return PageResponse.<ReviewDTO.ReviewResponse>builder()
-                .content(content)
-                .pageNumber(page.getNumber())
-                .pageSize(page.getSize())
-                .totalElements(page.getTotalElements())
-                .totalPages(page.getTotalPages())
-                .first(page.isFirst())
-                .last(page.isLast())
-                .build();
+        return PageResponse.from(page, r -> EntityMapper.toReviewResponse(
+                r,
+                userMap.get(r.getReviewerId()),
+                userMap.get(r.getRevieweeId())
+        ));
     }
 
     private ReviewDTO.ReviewResponse buildSingleResponse(FosterReview r) {
-        User reviewer = userRepository.findById(r.getReviewerId()).orElse(null);
-        User reviewee = userRepository.findById(r.getRevieweeId()).orElse(null);
+        User reviewer = lookupService.userOrNull(r.getReviewerId());
+        User reviewee = lookupService.userOrNull(r.getRevieweeId());
         return EntityMapper.toReviewResponse(r, reviewer, reviewee);
-    }
-
-    private Sort parseSort(String sort) {
-        if (!StringUtils.hasText(sort)) {
-            return Sort.by(Sort.Direction.DESC, "createdAt");
-        }
-        String[] parts = sort.split(",");
-        String field = parts[0];
-        Sort.Direction direction = parts.length > 1 && "asc".equalsIgnoreCase(parts[1])
-                ? Sort.Direction.ASC : Sort.Direction.DESC;
-
-        return switch (field) {
-            case "rating" -> Sort.by(direction, "rating");
-            case "createdAt", "created_at" -> Sort.by(direction, "createdAt");
-            default -> Sort.by(Sort.Direction.DESC, "createdAt");
-        };
     }
 }

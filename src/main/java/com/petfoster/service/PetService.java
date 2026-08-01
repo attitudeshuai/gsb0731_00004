@@ -2,6 +2,7 @@ package com.petfoster.service;
 
 import com.petfoster.common.BusinessException;
 import com.petfoster.common.PageResponse;
+import com.petfoster.common.SortResolver;
 import com.petfoster.dto.PetDTO;
 import com.petfoster.entity.Pet;
 import com.petfoster.entity.User;
@@ -33,10 +34,18 @@ public class PetService {
     private final UserRepository userRepository;
     private final FileStorageService fileStorageService;
 
+    private static final SortResolver SORT_RESOLVER = SortResolver.withDefault("createdAt")
+            .allow("name")
+            .allow("age")
+            .allow("species")
+            .allow("createdAt")
+            .alias("created_at", "createdAt")
+            .build();
+
     public PageResponse<PetDTO.PetResponse> getPets(
             int page, int size, String sort, String name, String species, Long ownerId) {
 
-        Sort sortObj = parseSort(sort);
+        Sort sortObj = SORT_RESOLVER.resolve(sort);
         Pageable pageable = PageRequest.of(page, size, sortObj);
 
         Page<Pet> petPage = petRepository.searchPets(
@@ -53,19 +62,8 @@ public class PetService {
         Map<Long, User> userMap = userRepository.findAllById(ownerIds).stream()
                 .collect(Collectors.toMap(User::getId, u -> u));
 
-        List<PetDTO.PetResponse> content = petPage.getContent().stream()
-                .map(pet -> EntityMapper.toPetResponse(pet, userMap.get(pet.getOwnerId())))
-                .toList();
-
-        return PageResponse.<PetDTO.PetResponse>builder()
-                .content(content)
-                .pageNumber(petPage.getNumber())
-                .pageSize(petPage.getSize())
-                .totalElements(petPage.getTotalElements())
-                .totalPages(petPage.getTotalPages())
-                .first(petPage.isFirst())
-                .last(petPage.isLast())
-                .build();
+        return PageResponse.from(petPage,
+                pet -> EntityMapper.toPetResponse(pet, userMap.get(pet.getOwnerId())));
     }
 
     public PetDTO.PetResponse getPetById(Long id) {
@@ -76,25 +74,13 @@ public class PetService {
     }
 
     public PageResponse<PetDTO.PetResponse> getMyPets(Long userId, int page, int size, String sort) {
-        Sort sortObj = parseSort(sort);
+        Sort sortObj = SORT_RESOLVER.resolve(sort);
         Pageable pageable = PageRequest.of(page, size, sortObj);
 
         Page<Pet> petPage = petRepository.findByOwnerId(userId, pageable);
         User owner = userRepository.findById(userId).orElse(null);
 
-        List<PetDTO.PetResponse> content = petPage.getContent().stream()
-                .map(pet -> EntityMapper.toPetResponse(pet, owner))
-                .toList();
-
-        return PageResponse.<PetDTO.PetResponse>builder()
-                .content(content)
-                .pageNumber(petPage.getNumber())
-                .pageSize(petPage.getSize())
-                .totalElements(petPage.getTotalElements())
-                .totalPages(petPage.getTotalPages())
-                .first(petPage.isFirst())
-                .last(petPage.isLast())
-                .build();
+        return PageResponse.from(petPage, pet -> EntityMapper.toPetResponse(pet, owner));
     }
 
     @Transactional
@@ -247,23 +233,5 @@ public class PetService {
             fileStorageService.deleteFile(photoUrl);
             log.info("宠物照片已清理: petId={}, photoUrl={}", petId, photoUrl);
         }
-    }
-
-    private Sort parseSort(String sort) {
-        if (!StringUtils.hasText(sort)) {
-            return Sort.by(Sort.Direction.DESC, "createdAt");
-        }
-        String[] parts = sort.split(",");
-        String field = parts[0];
-        Sort.Direction direction = parts.length > 1 && "asc".equalsIgnoreCase(parts[1])
-                ? Sort.Direction.ASC : Sort.Direction.DESC;
-
-        return switch (field) {
-            case "name" -> Sort.by(direction, "name");
-            case "age" -> Sort.by(direction, "age");
-            case "species" -> Sort.by(direction, "species");
-            case "createdAt", "created_at" -> Sort.by(direction, "createdAt");
-            default -> Sort.by(Sort.Direction.DESC, "createdAt");
-        };
     }
 }
