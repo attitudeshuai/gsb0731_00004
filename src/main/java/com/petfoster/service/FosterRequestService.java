@@ -9,23 +9,22 @@ import com.petfoster.entity.Notification;
 import com.petfoster.entity.Pet;
 import com.petfoster.entity.User;
 import com.petfoster.event.NotificationEvent;
+import com.petfoster.event.NotificationPublisher;
 import com.petfoster.repository.FosterRequestRepository;
 import com.petfoster.repository.NotificationRepository;
 import com.petfoster.repository.PetRepository;
 import com.petfoster.repository.UserRepository;
 import com.petfoster.util.EntityMapper;
+import com.petfoster.util.PageUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.util.StringUtils;
 
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -41,8 +40,20 @@ public class FosterRequestService {
     private final PetRepository petRepository;
     private final UserRepository userRepository;
     private final NotificationRepository notificationRepository;
-    private final ApplicationEventPublisher eventPublisher;
+    private final NotificationPublisher notificationPublisher;
     private final ReputationService reputationService;
+    private final EntityLookup entityLookup;
+
+    private static final Map<String, String> ALLOWED_SORT_FIELDS = Map.of(
+            "startDate", "startDate",
+            "start_date", "startDate",
+            "endDate", "endDate",
+            "end_date", "endDate",
+            "status", "status",
+            "createdAt", "createdAt",
+            "created_at", "createdAt"
+    );
+    private static final String DEFAULT_SORT_FIELD = "createdAt";
 
     private static final Set<FosterRequest.Status> ALLOWED_FROM_PENDING = Set.of(
             FosterRequest.Status.Approved, FosterRequest.Status.Cancelled);
@@ -56,8 +67,7 @@ public class FosterRequestService {
             FosterRequest.Status status, Long ownerId, Long fostererId, Long petId,
             LocalDate startDateFrom, LocalDate startDateTo, String breed) {
 
-        Sort sortObj = parseSort(sort);
-        Pageable pageable = PageRequest.of(page, size, sortObj);
+        Pageable pageable = PageUtils.pageable(page, size, sort, ALLOWED_SORT_FIELDS, DEFAULT_SORT_FIELD);
 
         Page<FosterRequest> requestPage = requestRepository.searchRequests(
                 status, ownerId, fostererId, petId,
@@ -67,8 +77,7 @@ public class FosterRequestService {
     }
 
     public FosterRequestDTO.RequestResponse getRequestById(Long id) {
-        FosterRequest request = requestRepository.findById(id)
-                .orElseThrow(() -> BusinessException.notFound("寄养申请不存在"));
+        FosterRequest request = entityLookup.getRequestOrThrow(id);
         return buildSingleResponseWithReputation(request);
     }
 
@@ -76,8 +85,7 @@ public class FosterRequestService {
             Long userId, int page, int size, String sort,
             FosterRequest.Status status, LocalDate startDateFrom, LocalDate startDateTo, String breed) {
 
-        Sort sortObj = parseSort(sort);
-        Pageable pageable = PageRequest.of(page, size, sortObj);
+        Pageable pageable = PageUtils.pageable(page, size, sort, ALLOWED_SORT_FIELDS, DEFAULT_SORT_FIELD);
 
         Page<FosterRequest> requestPage = requestRepository.findByUserIdWithFilters(
                 userId, status, startDateFrom, startDateTo, breed, pageable);
@@ -93,23 +101,14 @@ public class FosterRequestService {
                 req.getPetId(), req.getStartDate(), req.getEndDate(), req.getExcludeRequestId());
 
         List<FosterRequestDTO.ConflictInfo> conflictInfos = conflicts.stream()
-                .map(r -> {
-                    String fostererName = null;
-                    if (r.getFostererId() != null) {
-                        User fosterer = userRepository.findById(r.getFostererId()).orElse(null);
-                        if (fosterer != null) {
-                            fostererName = fosterer.getUsername();
-                        }
-                    }
-                    return FosterRequestDTO.ConflictInfo.builder()
-                            .requestId(r.getId())
-                            .startDate(r.getStartDate())
-                            .endDate(r.getEndDate())
-                            .status(r.getStatus())
-                            .fostererId(r.getFostererId())
-                            .fostererUsername(fostererName)
-                            .build();
-                })
+                .map(r -> FosterRequestDTO.ConflictInfo.builder()
+                        .requestId(r.getId())
+                        .startDate(r.getStartDate())
+                        .endDate(r.getEndDate())
+                        .status(r.getStatus())
+                        .fostererId(r.getFostererId())
+                        .fostererUsername(entityLookup.username(r.getFostererId(), null))
+                        .build())
                 .toList();
 
         return FosterRequestDTO.CheckConflictResponse.builder()
@@ -137,8 +136,7 @@ public class FosterRequestService {
 
     @Transactional
     public FosterRequestDTO.RequestResponse createRequest(Long userId, FosterRequestDTO.CreateRequest req) {
-        Pet pet = petRepository.findById(req.getPetId())
-                .orElseThrow(() -> BusinessException.notFound("宠物不存在"));
+        Pet pet = entityLookup.getPetOrThrow(req.getPetId());
 
         if (!pet.getOwnerId().equals(userId)) {
             throw BusinessException.forbidden("只能为自己的宠物创建寄养申请");
@@ -174,20 +172,16 @@ public class FosterRequestService {
         log.info("寄养申请创建成功: requestId={}, ownerId={}", request.getId(), userId);
 
         if (req.getFostererId() != null) {
-            String petName = pet.getName();
-            User owner = userRepository.findById(userId).orElse(null);
-            String ownerName = owner != null ? owner.getUsername() : "某位主人";
-            eventPublisher.publishEvent(new NotificationEvent(List.of(
-                    NotificationEvent.entry(
-                            req.getFostererId(),
-                            Notification.Type.FOSTER_REQUEST_CREATED,
-                            "收到新的寄养申请",
-                            String.format("%s 邀请您帮忙寄养宠物「%s」，寄养时间：%s 至 %s",
-                                    ownerName, petName, req.getStartDate(), req.getEndDate()),
-                            request.getId(),
-                            Notification.RelatedType.FOSTER_REQUEST
-                    )
-            )));
+            String ownerName = entityLookup.username(userId, "某位主人");
+            notificationPublisher.notify(
+                    req.getFostererId(),
+                    Notification.Type.FOSTER_REQUEST_CREATED,
+                    "收到新的寄养申请",
+                    String.format("%s 邀请您帮忙寄养宠物「%s」，寄养时间：%s 至 %s",
+                            ownerName, pet.getName(), req.getStartDate(), req.getEndDate()),
+                    request.getId(),
+                    Notification.RelatedType.FOSTER_REQUEST
+            );
         }
 
         return buildSingleResponse(request);
@@ -197,8 +191,7 @@ public class FosterRequestService {
     public FosterRequestDTO.RequestResponse updateRequest(
             Long userId, Long requestId, FosterRequestDTO.UpdateRequest req) {
 
-        FosterRequest request = requestRepository.findById(requestId)
-                .orElseThrow(() -> BusinessException.notFound("寄养申请不存在"));
+        FosterRequest request = entityLookup.getRequestOrThrow(requestId);
 
         if (!request.getOwnerId().equals(userId)) {
             throw BusinessException.forbidden("无权限修改此寄养申请");
@@ -246,8 +239,7 @@ public class FosterRequestService {
     public FosterRequestDTO.RequestResponse updateStatus(
             Long userId, Long requestId, FosterRequest.Status newStatus) {
 
-        FosterRequest request = requestRepository.findById(requestId)
-                .orElseThrow(() -> BusinessException.notFound("寄养申请不存在"));
+        FosterRequest request = entityLookup.getRequestOrThrow(requestId);
 
         boolean isOwner = request.getOwnerId().equals(userId);
         boolean isFosterer = request.getFostererId() != null && request.getFostererId().equals(userId);
@@ -263,46 +255,28 @@ public class FosterRequestService {
         log.info("寄养申请状态变更: requestId={}, 旧状态={}, 新状态={}",
                 requestId, oldStatus, newStatus);
 
-        Pet pet = petRepository.findById(request.getPetId()).orElse(null);
-        String petName = pet != null ? pet.getName() : "宠物";
-        User operator = userRepository.findById(userId).orElse(null);
-        String operatorName = operator != null ? operator.getUsername() : "某人";
+        String petName = entityLookup.petName(request.getPetId());
+        String operatorName = entityLookup.username(userId, "某人");
 
         String statusText = getStatusText(newStatus);
         String title = String.format("寄养申请状态变更：%s", statusText);
         String content = String.format("%s 将宠物「%s」的寄养申请状态更新为「%s」",
                 operatorName, petName, statusText);
 
-        List<NotificationEvent.NotificationEntry> entries = new java.util.ArrayList<>();
-        if (!request.getOwnerId().equals(userId)) {
-            entries.add(NotificationEvent.entry(
-                    request.getOwnerId(),
-                    Notification.Type.FOSTER_REQUEST_STATUS,
-                    title, content,
-                    request.getId(),
-                    Notification.RelatedType.FOSTER_REQUEST
-            ));
-        }
-        if (request.getFostererId() != null && !request.getFostererId().equals(userId)) {
-            entries.add(NotificationEvent.entry(
-                    request.getFostererId(),
-                    Notification.Type.FOSTER_REQUEST_STATUS,
-                    title, content,
-                    request.getId(),
-                    Notification.RelatedType.FOSTER_REQUEST
-            ));
-        }
-        if (!entries.isEmpty()) {
-            eventPublisher.publishEvent(new NotificationEvent(entries));
-        }
+        notificationPublisher.notifyParties(
+                request.getOwnerId(), request.getFostererId(), userId,
+                Notification.Type.FOSTER_REQUEST_STATUS,
+                title, content,
+                request.getId(),
+                Notification.RelatedType.FOSTER_REQUEST
+        );
 
         return buildSingleResponse(request);
     }
 
     @Transactional
     public void deleteRequest(Long userId, Long requestId) {
-        FosterRequest request = requestRepository.findById(requestId)
-                .orElseThrow(() -> BusinessException.notFound("寄养申请不存在"));
+        FosterRequest request = entityLookup.getRequestOrThrow(requestId);
 
         if (!request.getOwnerId().equals(userId)) {
             throw BusinessException.forbidden("无权限删除此寄养申请");
@@ -361,36 +335,28 @@ public class FosterRequestService {
                 ))
                 .toList();
 
-        return PageResponse.<FosterRequestDTO.RequestResponse>builder()
-                .content(content)
-                .pageNumber(page.getNumber())
-                .pageSize(page.getSize())
-                .totalElements(page.getTotalElements())
-                .totalPages(page.getTotalPages())
-                .first(page.isFirst())
-                .last(page.isLast())
-                .build();
+        return PageResponse.of(page, content);
     }
 
     private FosterRequestDTO.RequestResponse buildSingleResponse(FosterRequest r) {
-        Pet pet = petRepository.findById(r.getPetId()).orElse(null);
-        User owner = userRepository.findById(r.getOwnerId()).orElse(null);
-        User fosterer = r.getFostererId() != null
-                ? userRepository.findById(r.getFostererId()).orElse(null) : null;
-        return EntityMapper.toFosterRequestResponse(r, pet, owner, fosterer);
+        return EntityMapper.toFosterRequestResponse(
+                r,
+                entityLookup.findPet(r.getPetId()),
+                entityLookup.findUser(r.getOwnerId()),
+                entityLookup.findUser(r.getFostererId()));
     }
 
     private FosterRequestDTO.RequestResponse buildSingleResponseWithReputation(FosterRequest r) {
-        Pet pet = petRepository.findById(r.getPetId()).orElse(null);
-        User owner = userRepository.findById(r.getOwnerId()).orElse(null);
-        User fosterer = r.getFostererId() != null
-                ? userRepository.findById(r.getFostererId()).orElse(null) : null;
-
         ReputationDTO ownerReputation = reputationService.calculateReputation(r.getOwnerId());
         ReputationDTO fostererReputation = r.getFostererId() != null
                 ? reputationService.calculateReputation(r.getFostererId()) : null;
 
-        return EntityMapper.toFosterRequestResponse(r, pet, owner, fosterer, ownerReputation, fostererReputation);
+        return EntityMapper.toFosterRequestResponse(
+                r,
+                entityLookup.findPet(r.getPetId()),
+                entityLookup.findUser(r.getOwnerId()),
+                entityLookup.findUser(r.getFostererId()),
+                ownerReputation, fostererReputation);
     }
 
     @Transactional
@@ -404,31 +370,20 @@ public class FosterRequestService {
             log.info("寄养申请超时自动取消: requestId={}, startDate={}, 超时天数={}",
                     request.getId(), request.getStartDate(), timeoutDays);
 
-            Pet pet = petRepository.findById(request.getPetId()).orElse(null);
+            Pet pet = entityLookup.findPet(request.getPetId());
             String petName = pet != null ? pet.getName() : "宠物";
             String title = "寄养申请超时自动取消";
             String content = String.format(
                     "宠物「%s」的寄养申请因批准后超过 %d 天未开始，已自动取消（寄养开始日期：%s）",
                     petName, timeoutDays, request.getStartDate());
 
-            List<NotificationEvent.NotificationEntry> entries = new java.util.ArrayList<>();
-            entries.add(NotificationEvent.entry(
-                    request.getOwnerId(),
+            notificationPublisher.notifyParties(
+                    request.getOwnerId(), request.getFostererId(), null,
                     Notification.Type.FOSTER_REQUEST_TIMEOUT,
                     title, content,
                     request.getId(),
                     Notification.RelatedType.FOSTER_REQUEST
-            ));
-            if (request.getFostererId() != null) {
-                entries.add(NotificationEvent.entry(
-                        request.getFostererId(),
-                        Notification.Type.FOSTER_REQUEST_TIMEOUT,
-                        title, content,
-                        request.getId(),
-                        Notification.RelatedType.FOSTER_REQUEST
-                ));
-            }
-            eventPublisher.publishEvent(new NotificationEvent(entries));
+            );
         }
 
         return expiredRequests.size();
@@ -441,15 +396,14 @@ public class FosterRequestService {
 
         int reminderCount = 0;
         for (FosterRequest request : requests) {
-            Pet pet = petRepository.findById(request.getPetId()).orElse(null);
-            String petName = pet != null ? pet.getName() : "宠物";
+            String petName = entityLookup.petName(request.getPetId());
 
             String title = String.format("寄养归还提醒：还有 %d 天", daysBefore);
             String content = String.format(
                     "宠物「%s」的寄养将于 %s 到期，请记得按时归还宠物，感谢您的配合！",
                     petName, request.getEndDate());
 
-            List<NotificationEvent.NotificationEntry> entries = new java.util.ArrayList<>();
+            List<NotificationEvent.NotificationEntry> entries = new ArrayList<>();
 
             boolean ownerReminded = notificationRepository.existsByUserIdAndTypeAndRelatedIdAndRelatedType(
                     request.getOwnerId(),
@@ -486,7 +440,7 @@ public class FosterRequestService {
             }
 
             if (!entries.isEmpty()) {
-                eventPublisher.publishEvent(new NotificationEvent(entries));
+                notificationPublisher.publish(entries);
                 reminderCount += entries.size();
                 log.info("寄养归还提醒已发送: requestId={}, 提前天数={}, 接收人数={}",
                         request.getId(), daysBefore, entries.size());
@@ -494,23 +448,5 @@ public class FosterRequestService {
         }
 
         return reminderCount;
-    }
-
-    private Sort parseSort(String sort) {
-        if (!StringUtils.hasText(sort)) {
-            return Sort.by(Sort.Direction.DESC, "createdAt");
-        }
-        String[] parts = sort.split(",");
-        String field = parts[0];
-        Sort.Direction direction = parts.length > 1 && "asc".equalsIgnoreCase(parts[1])
-                ? Sort.Direction.ASC : Sort.Direction.DESC;
-
-        return switch (field) {
-            case "startDate", "start_date" -> Sort.by(direction, "startDate");
-            case "endDate", "end_date" -> Sort.by(direction, "endDate");
-            case "status" -> Sort.by(direction, "status");
-            case "createdAt", "created_at" -> Sort.by(direction, "createdAt");
-            default -> Sort.by(Sort.Direction.DESC, "createdAt");
-        };
     }
 }

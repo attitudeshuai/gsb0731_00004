@@ -26,4 +26,7 @@ public interface PetRepository extends JpaRepository<Pet, Long> {
             @Param("ownerId") Long ownerId,
             Pageable pageable
     );
+
+    @Query("SELECT p.species, COUNT(p) FROM Pet p GROUP BY p.species")
+    List<Object[]> countGroupBySpecies();
 }

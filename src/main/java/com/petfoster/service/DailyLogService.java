@@ -6,21 +6,18 @@ import com.petfoster.dto.DailyLogDTO;
 import com.petfoster.entity.FosterDailyLog;
 import com.petfoster.entity.FosterRequest;
 import com.petfoster.entity.Notification;
-import com.petfoster.entity.Pet;
 import com.petfoster.entity.User;
 import com.petfoster.event.NotificationEvent;
+import com.petfoster.event.NotificationPublisher;
 import com.petfoster.repository.FosterDailyLogRepository;
 import com.petfoster.repository.FosterRequestRepository;
-import com.petfoster.repository.PetRepository;
 import com.petfoster.repository.UserRepository;
 import com.petfoster.util.EntityMapper;
+import com.petfoster.util.PageUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -41,16 +38,21 @@ public class DailyLogService {
     private final FosterDailyLogRepository logRepository;
     private final FosterRequestRepository requestRepository;
     private final UserRepository userRepository;
-    private final PetRepository petRepository;
-    private final ApplicationEventPublisher eventPublisher;
+    private final NotificationPublisher notificationPublisher;
     private final FileStorageService fileStorageService;
+    private final EntityLookup entityLookup;
+
+    private static final Map<String, String> ALLOWED_SORT_FIELDS = Map.of(
+            "logDate", "logDate",
+            "log_date", "logDate"
+    );
+    private static final String DEFAULT_SORT_FIELD = "logDate";
 
     public PageResponse<DailyLogDTO.LogResponse> getLogs(
             int page, int size, String sort,
             Long requestId, Long fostererId, LocalDate startDate, LocalDate endDate) {
 
-        Sort sortObj = parseSort(sort);
-        Pageable pageable = PageRequest.of(page, size, sortObj);
+        Pageable pageable = PageUtils.pageable(page, size, sort, ALLOWED_SORT_FIELDS, DEFAULT_SORT_FIELD);
 
         Page<FosterDailyLog> logPage = logRepository.searchLogs(
                 requestId, fostererId, startDate, endDate, pageable);
@@ -61,7 +63,7 @@ public class DailyLogService {
     public DailyLogDTO.LogResponse getLogById(Long id) {
         FosterDailyLog log = logRepository.findById(id)
                 .orElseThrow(() -> BusinessException.notFound("寄养日报不存在"));
-        User fosterer = userRepository.findById(log.getFostererId()).orElse(null);
+        User fosterer = entityLookup.findUser(log.getFostererId());
         return EntityMapper.toDailyLogResponse(log, fosterer);
     }
 
@@ -72,8 +74,7 @@ public class DailyLogService {
 
     @Transactional
     public DailyLogDTO.LogResponse createLog(Long userId, DailyLogDTO.CreateLogRequest req, org.springframework.web.multipart.MultipartFile[] photoFiles) {
-        FosterRequest request = requestRepository.findById(req.getRequestId())
-                .orElseThrow(() -> BusinessException.notFound("寄养申请不存在"));
+        FosterRequest request = entityLookup.getRequestOrThrow(req.getRequestId());
 
         if (request.getStatus() != FosterRequest.Status.InProgress
                 && request.getStatus() != FosterRequest.Status.Approved) {
@@ -134,8 +135,8 @@ public class DailyLogService {
             log_info("寄养日报创建成功: logId={}, requestId={}, photoCount={}",
                     log.getId(), req.getRequestId(), photoUrlList.size());
 
-            User fosterer = userRepository.findById(userId).orElse(null);
-            String fostererName = fosterer != null ? fosterer.getUsername() : "寄养人";
+            User fosterer = entityLookup.findUser(userId);
+            String fostererName = EntityLookup.displayName(fosterer, "寄养人");
 
             List<NotificationEvent.NotificationEntry> entries = new ArrayList<>();
             entries.add(NotificationEvent.entry(
@@ -156,7 +157,7 @@ public class DailyLogService {
                     log.getId(),
                     Notification.RelatedType.DAILY_LOG
             ));
-            eventPublisher.publishEvent(new NotificationEvent(entries));
+            notificationPublisher.publish(entries);
 
             return EntityMapper.toDailyLogResponse(log, fosterer);
         } catch (Exception e) {
@@ -198,8 +199,7 @@ public class DailyLogService {
 
         try {
             if (req.getLogDate() != null) {
-                FosterRequest request = requestRepository.findById(log.getRequestId())
-                        .orElseThrow(() -> BusinessException.notFound("寄养申请不存在"));
+                FosterRequest request = entityLookup.getRequestOrThrow(log.getRequestId());
                 if (req.getLogDate().isBefore(request.getStartDate())
                         || req.getLogDate().isAfter(request.getEndDate())) {
                     throw BusinessException.badRequest("日志日期必须在寄养期间内");
@@ -271,9 +271,9 @@ public class DailyLogService {
                 });
             }
 
-            FosterRequest request = requestRepository.findById(log.getRequestId()).orElse(null);
-            User fosterer = userRepository.findById(log.getFostererId()).orElse(null);
-            String fostererName = fosterer != null ? fosterer.getUsername() : "寄养人";
+            FosterRequest request = entityLookup.findRequest(log.getRequestId());
+            User fosterer = entityLookup.findUser(log.getFostererId());
+            String fostererName = EntityLookup.displayName(fosterer, "寄养人");
 
             if (request != null) {
                 List<NotificationEvent.NotificationEntry> entries = new ArrayList<>();
@@ -295,7 +295,7 @@ public class DailyLogService {
                         log.getId(),
                         Notification.RelatedType.DAILY_LOG
                 ));
-                eventPublisher.publishEvent(new NotificationEvent(entries));
+                notificationPublisher.publish(entries);
             }
 
             return EntityMapper.toDailyLogResponse(log, fosterer);
@@ -344,15 +344,7 @@ public class DailyLogService {
                 .map(l -> EntityMapper.toDailyLogResponse(l, userMap.get(l.getFostererId())))
                 .toList();
 
-        return PageResponse.<DailyLogDTO.LogResponse>builder()
-                .content(content)
-                .pageNumber(page.getNumber())
-                .pageSize(page.getSize())
-                .totalElements(page.getTotalElements())
-                .totalPages(page.getTotalPages())
-                .first(page.isFirst())
-                .last(page.isLast())
-                .build();
+        return PageResponse.of(page, content);
     }
 
     public int sendDailyLogReminders() {
@@ -375,8 +367,7 @@ public class DailyLogService {
             boolean hasTodayLog = logRepository.existsByRequestIdAndLogDate(request.getId(), today);
 
             if (!hasTodayLog) {
-                Pet pet = petRepository.findById(request.getPetId()).orElse(null);
-                String petName = pet != null ? pet.getName() : "宠物";
+                String petName = entityLookup.petName(request.getPetId());
 
                 String title = "今日寄养日报提醒";
                 String content = String.format(
@@ -398,7 +389,7 @@ public class DailyLogService {
         }
 
         if (!allEntries.isEmpty()) {
-            eventPublisher.publishEvent(new NotificationEvent(allEntries));
+            notificationPublisher.publish(allEntries);
             log.info("日报提醒发送完成，共发送 {} 条提醒", reminderCount);
         }
 
@@ -435,8 +426,7 @@ public class DailyLogService {
                     request.getId(), effectiveStartDate, today);
 
             if (logCount == 0 && daysInRange >= missedDays) {
-                Pet pet = petRepository.findById(request.getPetId()).orElse(null);
-                String petName = pet != null ? pet.getName() : "宠物";
+                String petName = entityLookup.petName(request.getPetId());
 
                 String title = "连续未填写日报提醒";
                 String content = String.format(
@@ -458,25 +448,10 @@ public class DailyLogService {
         }
 
         if (!allEntries.isEmpty()) {
-            eventPublisher.publishEvent(new NotificationEvent(allEntries));
+            notificationPublisher.publish(allEntries);
             log.info("连续未写日报提醒发送完成，共发送 {} 条提醒", reminderCount);
         }
 
         return reminderCount;
-    }
-
-    private Sort parseSort(String sort) {
-        if (!StringUtils.hasText(sort)) {
-            return Sort.by(Sort.Direction.DESC, "logDate");
-        }
-        String[] parts = sort.split(",");
-        String field = parts[0];
-        Sort.Direction direction = parts.length > 1 && "asc".equalsIgnoreCase(parts[1])
-                ? Sort.Direction.ASC : Sort.Direction.DESC;
-
-        return switch (field) {
-            case "logDate", "log_date" -> Sort.by(direction, "logDate");
-            default -> Sort.by(Sort.Direction.DESC, "logDate");
-        };
     }
 }

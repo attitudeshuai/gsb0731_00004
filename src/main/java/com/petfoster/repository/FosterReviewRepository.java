@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Repository
@@ -44,4 +45,21 @@ public interface FosterReviewRepository extends JpaRepository<FosterReview, Long
     Double findAveragePetConditionByRevieweeId(@Param("revieweeId") Long revieweeId);
 
     long countByRevieweeId(Long revieweeId);
+
+    @Query("SELECT FUNCTION('DATE', r.createdAt), COUNT(r) FROM FosterReview r " +
+           "WHERE r.createdAt >= :from AND r.createdAt < :to " +
+           "GROUP BY FUNCTION('DATE', r.createdAt)")
+    List<Object[]> countGroupByDate(@Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
+
+    @Query("SELECT r.revieweeId, AVG(r.rating), AVG(r.responsibilityRating), " +
+           "AVG(r.communicationRating), AVG(r.petConditionRating), COUNT(r) " +
+           "FROM FosterReview r GROUP BY r.revieweeId " +
+           "ORDER BY AVG(r.rating) DESC, COUNT(r) DESC")
+    List<Object[]> findTopRatedUsers(Pageable pageable);
+
+    @Query("SELECT r.revieweeId, AVG(r.rating) FROM FosterReview r " +
+           "WHERE r.createdAt >= :from AND r.createdAt < :to " +
+           "GROUP BY r.revieweeId")
+    List<Object[]> averageRatingGroupByReviewee(@Param("from") LocalDateTime from,
+                                                @Param("to") LocalDateTime to);
 }

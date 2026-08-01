@@ -12,6 +12,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
+import java.time.YearMonth;
 
 @RestController
 @RequestMapping("/api/stats")
@@ -46,6 +47,13 @@ public class StatsController {
     @Operation(summary = "平均寄养时长统计", description = "统计寄养时长分布、平均值、中位数及按品种/物种分类的平均时长")
     public ApiResponse<StatsDTO.FosterDurationStats> getFosterDuration() {
         return ApiResponse.success(statsService.getFosterDurationStats());
+    }
+
+    @GetMapping("/fosterer-monthly")
+    @Operation(summary = "寄养人月度表现", description = "按月份统计每个寄养人的完成单数、平均评分和完成率，不传月份则默认当月")
+    public ApiResponse<StatsDTO.FostererMonthlyStats> getFostererMonthly(
+            @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM") YearMonth month) {
+        return ApiResponse.success(statsService.getFostererMonthlyStats(month));
     }
 
     @GetMapping("/mine")

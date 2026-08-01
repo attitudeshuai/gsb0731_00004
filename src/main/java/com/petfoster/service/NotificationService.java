@@ -8,19 +8,18 @@ import com.petfoster.entity.Notification;
 import com.petfoster.repository.FailedNotificationRepository;
 import com.petfoster.repository.NotificationRepository;
 import com.petfoster.util.EntityMapper;
+import com.petfoster.util.PageUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Service
@@ -29,6 +28,14 @@ public class NotificationService {
 
     private final NotificationRepository notificationRepository;
     private final FailedNotificationRepository failedNotificationRepository;
+
+    private static final Map<String, String> ALLOWED_SORT_FIELDS = Map.of(
+            "createdAt", "createdAt",
+            "created_at", "createdAt",
+            "isRead", "isRead",
+            "is_read", "isRead"
+    );
+    private static final String DEFAULT_SORT_FIELD = "createdAt";
 
     @Transactional
     public void sendNotification(Long userId, Notification.Type type, String title, String content,
@@ -49,8 +56,7 @@ public class NotificationService {
     public PageResponse<NotificationDTO.NotificationResponse> getMyNotifications(
             Long userId, int page, int size, String sort, Boolean isRead) {
 
-        Sort sortObj = parseSort(sort);
-        Pageable pageable = PageRequest.of(page, size, sortObj);
+        Pageable pageable = PageUtils.pageable(page, size, sort, ALLOWED_SORT_FIELDS, DEFAULT_SORT_FIELD);
 
         Page<Notification> notificationPage;
         if (isRead != null) {
@@ -63,15 +69,7 @@ public class NotificationService {
                 .map(EntityMapper::toNotificationResponse)
                 .toList();
 
-        return PageResponse.<NotificationDTO.NotificationResponse>builder()
-                .content(content)
-                .pageNumber(notificationPage.getNumber())
-                .pageSize(notificationPage.getSize())
-                .totalElements(notificationPage.getTotalElements())
-                .totalPages(notificationPage.getTotalPages())
-                .first(notificationPage.isFirst())
-                .last(notificationPage.isLast())
-                .build();
+        return PageResponse.of(notificationPage, content);
     }
 
     public NotificationDTO.UnreadCountResponse getUnreadCount(Long userId) {
@@ -176,21 +174,5 @@ public class NotificationService {
     private String truncate(String str, int maxLen) {
         if (str == null) return null;
         return str.length() <= maxLen ? str : str.substring(0, maxLen);
-    }
-
-    private Sort parseSort(String sort) {
-        if (!StringUtils.hasText(sort)) {
-            return Sort.by(Sort.Direction.DESC, "createdAt");
-        }
-        String[] parts = sort.split(",");
-        String field = parts[0];
-        Sort.Direction direction = parts.length > 1 && "asc".equalsIgnoreCase(parts[1])
-                ? Sort.Direction.ASC : Sort.Direction.DESC;
-
-        return switch (field) {
-            case "createdAt", "created_at" -> Sort.by(direction, "createdAt");
-            case "isRead", "is_read" -> Sort.by(direction, "isRead");
-            default -> Sort.by(Sort.Direction.DESC, "createdAt");
-        };
     }
 }

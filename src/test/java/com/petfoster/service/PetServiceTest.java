@@ -19,7 +19,6 @@ import org.springframework.data.domain.Pageable;
 
 import java.util.Arrays;
 import java.util.List;
-import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -33,6 +32,9 @@ class PetServiceTest {
 
     @Mock
     private UserRepository userRepository;
+
+    @Mock
+    private EntityLookup entityLookup;
 
     @InjectMocks
     private PetService petService;
@@ -93,8 +95,8 @@ class PetServiceTest {
     @Test
     @DisplayName("获取宠物详情 - 成功")
     void testGetPetById_Success() {
-        when(petRepository.findById(1L)).thenReturn(Optional.of(testPet));
-        when(userRepository.findById(1L)).thenReturn(Optional.of(testOwner));
+        when(entityLookup.getPetOrThrow(1L)).thenReturn(testPet);
+        when(entityLookup.findUser(1L)).thenReturn(testOwner);
 
         PetDTO.PetResponse response = petService.getPetById(1L);
 
@@ -106,7 +108,8 @@ class PetServiceTest {
     @Test
     @DisplayName("获取宠物详情 - 宠物不存在")
     void testGetPetById_NotFound() {
-        when(petRepository.findById(999L)).thenReturn(Optional.empty());
+        when(entityLookup.getPetOrThrow(999L))
+                .thenThrow(BusinessException.notFound("宠物不存在"));
 
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> petService.getPetById(999L));
@@ -117,7 +120,7 @@ class PetServiceTest {
     @Test
     @DisplayName("创建宠物 - 成功")
     void testCreatePet_Success() {
-        when(userRepository.findById(1L)).thenReturn(Optional.of(testOwner));
+        when(entityLookup.getUserOrThrow(1L)).thenReturn(testOwner);
         when(petRepository.save(any(Pet.class))).thenAnswer(inv -> {
             Pet saved = inv.getArgument(0);
             saved.setId(2L);
@@ -135,9 +138,9 @@ class PetServiceTest {
     @Test
     @DisplayName("更新宠物 - 成功")
     void testUpdatePet_Success() {
-        when(petRepository.findById(1L)).thenReturn(Optional.of(testPet));
+        when(entityLookup.getPetOrThrow(1L)).thenReturn(testPet);
         when(petRepository.save(any(Pet.class))).thenReturn(testPet);
-        when(userRepository.findById(1L)).thenReturn(Optional.of(testOwner));
+        when(entityLookup.findUser(1L)).thenReturn(testOwner);
 
         PetDTO.PetResponse response = petService.updatePet(1L, 1L, updateRequest);
 
@@ -148,7 +151,7 @@ class PetServiceTest {
     @Test
     @DisplayName("更新宠物 - 无权限")
     void testUpdatePet_Forbidden() {
-        when(petRepository.findById(1L)).thenReturn(Optional.of(testPet));
+        when(entityLookup.getPetOrThrow(1L)).thenReturn(testPet);
 
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> petService.updatePet(2L, 1L, updateRequest));
@@ -160,7 +163,7 @@ class PetServiceTest {
     @Test
     @DisplayName("删除宠物 - 成功")
     void testDeletePet_Success() {
-        when(petRepository.findById(1L)).thenReturn(Optional.of(testPet));
+        when(entityLookup.getPetOrThrow(1L)).thenReturn(testPet);
         doNothing().when(petRepository).delete(testPet);
 
         assertDoesNotThrow(() -> petService.deletePet(1L, 1L));
@@ -170,7 +173,7 @@ class PetServiceTest {
     @Test
     @DisplayName("删除宠物 - 无权限")
     void testDeletePet_Forbidden() {
-        when(petRepository.findById(1L)).thenReturn(Optional.of(testPet));
+        when(entityLookup.getPetOrThrow(1L)).thenReturn(testPet);
 
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> petService.deletePet(2L, 1L));

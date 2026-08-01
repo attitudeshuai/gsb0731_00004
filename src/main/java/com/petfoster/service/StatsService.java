@@ -5,16 +5,18 @@ import com.petfoster.entity.FosterRequest;
 import com.petfoster.entity.Pet;
 import com.petfoster.entity.User;
 import com.petfoster.repository.*;
+import com.petfoster.util.DateBucketUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 @Slf4j
 @Service
@@ -37,16 +39,8 @@ public class StatsService {
         long totalReviews = reviewRepository.count();
 
         LocalDate today = LocalDate.now();
-        LocalDateTime todayStart = today.atStartOfDay();
-        LocalDateTime todayEnd = today.plusDays(1).atStartOfDay();
-
-        long todayNewRequests = 0;
-        for (FosterRequest req : requestRepository.findAll()) {
-            LocalDateTime createdAt = req.getCreatedAt();
-            if (createdAt != null && !createdAt.isBefore(todayStart) && createdAt.isBefore(todayEnd)) {
-                todayNewRequests++;
-            }
-        }
+        long todayNewRequests = requestRepository.countCreatedBetween(
+                today.atStartOfDay(), today.plusDays(1).atStartOfDay());
 
         Map<String, Long> requestStatusCount = Arrays.stream(FosterRequest.Status.values())
                 .collect(Collectors.toMap(
@@ -54,10 +48,10 @@ public class StatsService {
                         status -> requestRepository.countByStatus(status)
                 ));
 
-        Map<String, Long> petSpeciesCount = petRepository.findAll().stream()
-                .collect(Collectors.groupingBy(
-                        Pet::getSpecies,
-                        Collectors.counting()
+        Map<String, Long> petSpeciesCount = petRepository.countGroupBySpecies().stream()
+                .collect(Collectors.toMap(
+                        row -> row[0] != null ? (String) row[0] : "未知",
+                        row -> ((Number) row[1]).longValue()
                 ));
 
         List<StatsDTO.TopUser> topRatedUsers = calculateTopRatedUsers(10);
@@ -88,197 +82,95 @@ public class StatsService {
             endDate = temp;
         }
 
-        List<LocalDate> dateRange = new ArrayList<>();
-        LocalDate current = startDate;
-        while (!current.isAfter(endDate)) {
-            dateRange.add(current);
-            current = current.plusDays(1);
-        }
+        List<LocalDate> dateRange = DateBucketUtils.range(startDate, endDate);
+        LocalDateTime from = startDate.atStartOfDay();
+        LocalDateTime to = endDate.plusDays(1).atStartOfDay();
 
-        Map<LocalDate, Long> dailyRequestsMap = new HashMap<>();
-        Map<LocalDate, Long> dailyCompletedMap = new HashMap<>();
-        Map<LocalDate, Long> dailyUsersMap = new HashMap<>();
-        Map<LocalDate, Long> dailyReviewsMap = new HashMap<>();
-
-        for (FosterRequest req : requestRepository.findAll()) {
-            LocalDateTime createdAt = req.getCreatedAt();
-            if (createdAt != null) {
-                LocalDate date = createdAt.toLocalDate();
-                if (!date.isBefore(startDate) && !date.isAfter(endDate)) {
-                    dailyRequestsMap.merge(date, 1L, Long::sum);
-                    if (req.getStatus() == FosterRequest.Status.Completed) {
-                        dailyCompletedMap.merge(date, 1L, Long::sum);
-                    }
-                }
-            }
-        }
-
-        for (User user : userRepository.findAll()) {
-            LocalDateTime createdAt = user.getCreatedAt();
-            if (createdAt != null) {
-                LocalDate date = createdAt.toLocalDate();
-                if (!date.isBefore(startDate) && !date.isAfter(endDate)) {
-                    dailyUsersMap.merge(date, 1L, Long::sum);
-                }
-            }
-        }
-
-        for (var review : reviewRepository.findAll()) {
-            LocalDateTime createdAt = review.getCreatedAt();
-            if (createdAt != null) {
-                LocalDate date = createdAt.toLocalDate();
-                if (!date.isBefore(startDate) && !date.isAfter(endDate)) {
-                    dailyReviewsMap.merge(date, 1L, Long::sum);
-                }
-            }
-        }
-
-        List<StatsDTO.DailyCount> dailyRequests = dateRange.stream()
-                .map(d -> StatsDTO.DailyCount.builder()
-                        .date(d.format(DATE_FORMATTER))
-                        .count(dailyRequestsMap.getOrDefault(d, 0L))
-                        .build())
-                .toList();
-
-        List<StatsDTO.DailyCount> dailyCompletedRequests = dateRange.stream()
-                .map(d -> StatsDTO.DailyCount.builder()
-                        .date(d.format(DATE_FORMATTER))
-                        .count(dailyCompletedMap.getOrDefault(d, 0L))
-                        .build())
-                .toList();
-
-        List<StatsDTO.DailyCount> dailyUsers = dateRange.stream()
-                .map(d -> StatsDTO.DailyCount.builder()
-                        .date(d.format(DATE_FORMATTER))
-                        .count(dailyUsersMap.getOrDefault(d, 0L))
-                        .build())
-                .toList();
-
-        List<StatsDTO.DailyCount> dailyReviews = dateRange.stream()
-                .map(d -> StatsDTO.DailyCount.builder()
-                        .date(d.format(DATE_FORMATTER))
-                        .count(dailyReviewsMap.getOrDefault(d, 0L))
-                        .build())
-                .toList();
+        Map<LocalDate, Long> dailyRequestsMap = DateBucketUtils.toCountMap(
+                requestRepository.countGroupByDate(from, to));
+        Map<LocalDate, Long> dailyCompletedMap = DateBucketUtils.toCountMap(
+                requestRepository.countByStatusGroupByDate(FosterRequest.Status.Completed, from, to));
+        Map<LocalDate, Long> dailyUsersMap = DateBucketUtils.toCountMap(
+                userRepository.countGroupByDate(from, to));
+        Map<LocalDate, Long> dailyReviewsMap = DateBucketUtils.toCountMap(
+                reviewRepository.countGroupByDate(from, to));
 
         return StatsDTO.TrendStats.builder()
                 .startDate(startDate.format(DATE_FORMATTER))
                 .endDate(endDate.format(DATE_FORMATTER))
-                .dailyRequests(dailyRequests)
-                .dailyCompletedRequests(dailyCompletedRequests)
-                .dailyUsers(dailyUsers)
-                .dailyReviews(dailyReviews)
+                .dailyRequests(toDailyCounts(dateRange, dailyRequestsMap))
+                .dailyCompletedRequests(toDailyCounts(dateRange, dailyCompletedMap))
+                .dailyUsers(toDailyCounts(dateRange, dailyUsersMap))
+                .dailyReviews(toDailyCounts(dateRange, dailyReviewsMap))
                 .build();
     }
 
+    private List<StatsDTO.DailyCount> toDailyCounts(List<LocalDate> dateRange, Map<LocalDate, Long> counts) {
+        return DateBucketUtils.fillGaps(dateRange, counts,
+                (day, count) -> StatsDTO.DailyCount.builder()
+                        .date(day.format(DATE_FORMATTER))
+                        .count(count)
+                        .build());
+    }
+
     private List<StatsDTO.TopUser> calculateTopRatedUsers(int limit) {
-        List<StatsDTO.TopUser> allUsers = new ArrayList<>();
+        List<Object[]> rows = reviewRepository.findTopRatedUsers(PageRequest.of(0, limit));
+        List<Long> userIds = rows.stream().map(row -> (Long) row[0]).toList();
+        Map<Long, User> userMap = userRepository.findAllById(userIds).stream()
+                .collect(Collectors.toMap(User::getId, u -> u));
 
-        for (User user : userRepository.findAll()) {
-            long reviewCount = reviewRepository.countByRevieweeId(user.getId());
-            if (reviewCount == 0) continue;
+        return rows.stream()
+                .map(row -> {
+                    Long userId = (Long) row[0];
+                    User user = userMap.get(userId);
+                    return StatsDTO.TopUser.builder()
+                            .userId(userId)
+                            .username(user != null ? user.getUsername() : null)
+                            .averageRating(round2((Double) row[1]))
+                            .averageResponsibility(round2((Double) row[2]))
+                            .averageCommunication(round2((Double) row[3]))
+                            .averagePetCondition(round2((Double) row[4]))
+                            .reviewCount(((Number) row[5]).longValue())
+                            .build();
+                })
+                .toList();
+    }
 
-            Double avgRating = reviewRepository.findAverageRatingByRevieweeId(user.getId());
-            Double avgResponsibility = reviewRepository.findAverageResponsibilityByRevieweeId(user.getId());
-            Double avgCommunication = reviewRepository.findAverageCommunicationByRevieweeId(user.getId());
-            Double avgPetCondition = reviewRepository.findAveragePetConditionByRevieweeId(user.getId());
-
-            if (avgRating == null) avgRating = 0.0;
-            if (avgResponsibility == null) avgResponsibility = 0.0;
-            if (avgCommunication == null) avgCommunication = 0.0;
-            if (avgPetCondition == null) avgPetCondition = 0.0;
-
-            allUsers.add(StatsDTO.TopUser.builder()
-                    .userId(user.getId())
-                    .username(user.getUsername())
-                    .averageRating(Math.round(avgRating * 100.0) / 100.0)
-                    .averageResponsibility(Math.round(avgResponsibility * 100.0) / 100.0)
-                    .averageCommunication(Math.round(avgCommunication * 100.0) / 100.0)
-                    .averagePetCondition(Math.round(avgPetCondition * 100.0) / 100.0)
-                    .reviewCount(reviewCount)
-                    .build());
-        }
-
-        allUsers.sort((u1, u2) -> {
-            int ratingCompare = Double.compare(u2.getAverageRating(), u1.getAverageRating());
-            if (ratingCompare != 0) return ratingCompare;
-            return Long.compare(u2.getReviewCount(), u1.getReviewCount());
-        });
-
-        return allUsers.stream().limit(limit).toList();
+    private double round2(Double value) {
+        return value != null ? Math.round(value * 100.0) / 100.0 : 0.0;
     }
 
     public StatsDTO.PopularBreedStats getPopularBreedStats(int topN) {
-        List<FosterRequest> allRequests = requestRepository.findAll();
-        Map<Long, Pet> petMap = new HashMap<>();
-        for (Pet pet : petRepository.findAll()) {
-            petMap.put(pet.getId(), pet);
-        }
+        List<Object[]> rows = requestRepository.countGroupByBreed();
+        long totalRequests = rows.stream().mapToLong(row -> ((Number) row[2]).longValue()).sum();
 
-        Map<String, long[]> breedStats = new HashMap<>();
-        long totalRequests = 0;
+        List<StatsDTO.PetBreedRank> breedRanks = rows.stream()
+                .map(row -> {
+                    long count = ((Number) row[2]).longValue();
+                    double percentage = totalRequests > 0
+                            ? Math.round(count * 10000.0 / totalRequests) / 100.0 : 0.0;
+                    return StatsDTO.PetBreedRank.builder()
+                            .breed((String) row[0])
+                            .species((String) row[1])
+                            .requestCount(count)
+                            .percentage(percentage)
+                            .build();
+                })
+                .toList();
 
-        for (FosterRequest req : allRequests) {
-            Pet pet = petMap.get(req.getPetId());
-            if (pet == null) continue;
-
-            String breed = pet.getBreed();
-            if (breed == null || breed.isEmpty()) {
-                breed = "未知品种";
-            }
-            String species = pet.getSpecies();
-
-            breedStats.computeIfAbsent(breed, k -> new long[]{0, 0});
-            breedStats.get(breed)[0]++;
-            breedStats.get(breed)[1] = species != null ? species.hashCode() : 0;
-            totalRequests++;
-        }
-
-        List<StatsDTO.PetBreedRank> breedRanks = new ArrayList<>();
-        for (Map.Entry<String, long[]> entry : breedStats.entrySet()) {
-            String breed = entry.getKey();
-            long count = entry.getValue()[0];
-            String species = "";
-
-            Pet samplePet = petMap.values().stream()
-                    .filter(p -> breed.equals(p.getBreed()) || ("未知品种".equals(breed) && (p.getBreed() == null || p.getBreed().isEmpty())))
-                    .findFirst()
-                    .orElse(null);
-            if (samplePet != null) {
-                species = samplePet.getSpecies();
-            }
-
-            double percentage = totalRequests > 0 ? Math.round(count * 10000.0 / totalRequests) / 100.0 : 0.0;
-
-            breedRanks.add(StatsDTO.PetBreedRank.builder()
-                    .breed(breed)
-                    .species(species)
-                    .requestCount(count)
-                    .percentage(percentage)
-                    .build());
-        }
-
-        breedRanks.sort((b1, b2) -> {
-            int countCompare = Long.compare(b2.getRequestCount(), b1.getRequestCount());
-            if (countCompare != 0) return countCompare;
-            return b1.getBreed().compareTo(b2.getBreed());
-        });
-
-        if (topN > 0 && breedRanks.size() > topN) {
-            breedRanks = breedRanks.subList(0, topN);
-        }
+        List<StatsDTO.PetBreedRank> topBreeds = topN > 0
+                ? breedRanks.stream().limit(topN).toList()
+                : breedRanks;
 
         return StatsDTO.PopularBreedStats.builder()
-                .topBreeds(breedRanks)
+                .topBreeds(topBreeds)
                 .totalRequests(totalRequests)
-                .totalBreeds(breedStats.size())
+                .totalBreeds(breedRanks.size())
                 .build();
     }
 
     public StatsDTO.FosterDurationStats getFosterDurationStats() {
-        List<FosterRequest> completedRequests = requestRepository.findAll().stream()
-                .filter(r -> r.getStatus() == FosterRequest.Status.Completed)
-                .toList();
+        List<FosterRequest> completedRequests = requestRepository.findByStatus(FosterRequest.Status.Completed);
 
         if (completedRequests.isEmpty()) {
             return StatsDTO.FosterDurationStats.builder()
@@ -293,7 +185,11 @@ public class StatsService {
         }
 
         Map<Long, Pet> petMap = new HashMap<>();
-        for (Pet pet : petRepository.findAll()) {
+        List<Long> petIds = completedRequests.stream()
+                .map(FosterRequest::getPetId)
+                .distinct()
+                .toList();
+        for (Pet pet : petRepository.findAllById(petIds)) {
             petMap.put(pet.getId(), pet);
         }
 
@@ -359,6 +255,52 @@ public class StatsService {
                 .totalCompletedRequests(completedRequests.size())
                 .averageBySpecies(averageBySpecies)
                 .averageByBreed(averageByBreed)
+                .build();
+    }
+
+    /**
+     * 寄养人月度表现：按寄养结束日期落在该月的申请分组到寄养人，
+     * 完成率 = 已完成 / 当月全部已指派申请（百分制，保留两位小数），
+     * 平均评分取该月内收到的评价均值；未收到评价时为 0.0。
+     */
+    public StatsDTO.FostererMonthlyStats getFostererMonthlyStats(YearMonth month) {
+        if (month == null) {
+            month = YearMonth.now();
+        }
+        LocalDate monthStart = month.atDay(1);
+        LocalDate monthEnd = month.atEndOfMonth();
+
+        List<Object[]> rows = requestRepository.countGroupByFosterer(monthStart, monthEnd);
+
+        Map<Long, Double> ratingMap = reviewRepository.averageRatingGroupByReviewee(
+                monthStart.atStartOfDay(), monthEnd.plusDays(1).atStartOfDay()).stream()
+                .collect(Collectors.toMap(row -> (Long) row[0], row -> (Double) row[1]));
+
+        List<Long> fostererIds = rows.stream().map(row -> (Long) row[0]).toList();
+        Map<Long, User> userMap = userRepository.findAllById(fostererIds).stream()
+                .collect(Collectors.toMap(User::getId, u -> u));
+
+        List<StatsDTO.FostererPerformance> fosterers = rows.stream()
+                .map(row -> {
+                    Long fostererId = (Long) row[0];
+                    long completedCount = ((Number) row[1]).longValue();
+                    long totalCount = ((Number) row[2]).longValue();
+                    User fosterer = userMap.get(fostererId);
+                    return StatsDTO.FostererPerformance.builder()
+                            .fostererId(fostererId)
+                            .fostererUsername(fosterer != null ? fosterer.getUsername() : null)
+                            .completedCount(completedCount)
+                            .totalCount(totalCount)
+                            .averageRating(round2(ratingMap.get(fostererId)))
+                            .completionRate(totalCount > 0
+                                    ? Math.round(completedCount * 10000.0 / totalCount) / 100.0 : 0.0)
+                            .build();
+                })
+                .toList();
+
+        return StatsDTO.FostererMonthlyStats.builder()
+                .month(month.toString())
+                .fosterers(fosterers)
                 .build();
     }
 
